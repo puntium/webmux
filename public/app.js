@@ -110,6 +110,7 @@ function loadLayout() {
 // ---------------------------------------------------------------------------
 
 function render() {
+  if (tree && !treeContains(tree, focusedPane)) focusedPane = firstPane(tree);
   layoutEl.replaceChildren();
   if (tree) layoutEl.appendChild(buildNode(tree));
   // xterm needs its element in the DOM before open(); open any new tiles now.
@@ -167,7 +168,13 @@ function buildPane(node) {
   if (active) body.appendChild(active.root);
 
   el.append(bar, body);
-  el.addEventListener('pointerdown', () => { focusedPane = node; }, true);
+  el.classList.toggle('focused', node === focusedPane);
+  el.addEventListener('pointerdown', () => {
+    if (focusedPane === node) return;
+    focusedPane = node;
+    document.querySelectorAll('.pane.focused').forEach((p) => p.classList.remove('focused'));
+    el.classList.add('focused');
+  }, true);
 
   // A dragged tab can be dropped anywhere on this pane; unless it lands on a
   // specific tab (handled in buildTab), it is appended at the end. Panes are

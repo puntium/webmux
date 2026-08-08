@@ -37,6 +37,7 @@
       --border: #34344a;
       --text: #c8c8d8;
       --accent: #7aa2f7;
+      --accent-yellow: #e0af68;
     }
     * { box-sizing: border-box; }
     body {
@@ -105,6 +106,7 @@
       min-height: 0;
     }
     .pane.drop-target { border-color: var(--accent); }
+    .pane.focused { border-color: #4a4a68; }
     .pane-bar {
       display: flex;
       align-items: center;
@@ -116,6 +118,7 @@
       flex: none;
       min-width: 0;
     }
+    .pane.focused .pane-bar { background: rgba(255, 255, 255, 0.1); }
     .tabs {
       display: flex;
       gap: 2px;
@@ -143,6 +146,11 @@
     }
     .tab:hover { opacity: 0.9; background: rgba(255, 255, 255, 0.05); }
     .tab.active { opacity: 1; background: rgba(122, 162, 247, 0.15); color: var(--accent); }
+    .pane.focused .tab.active {
+      background: rgba(224, 175, 104, 0.22);
+      color: var(--accent-yellow);
+      font-weight: 600;
+    }
     .tab.dragging { opacity: 0.3; }
     .tab.drop-before { box-shadow: -2px 0 0 0 var(--accent); }
     .tab.drop-after { box-shadow: 2px 0 0 0 var(--accent); }
@@ -167,7 +175,15 @@
     }
     .new-tab:hover, .pane-actions button:hover { opacity: 1; color: var(--accent); }
     .pane-actions { display: flex; gap: 2px; flex: none; margin-left: auto; }
-    .pane-body { flex: 1; display: flex; min-width: 0; min-height: 0; }
+    .pane-body {
+      flex: 1;
+      display: flex;
+      min-width: 0;
+      min-height: 0;
+      background: var(--panel);
+      transition: filter 0.12s, opacity 0.12s;
+    }
+    .pane:not(.focused) .pane-body { filter: brightness(0.72); opacity: 0.85; }
     .tile {
       flex: 1;
       display: flex;
