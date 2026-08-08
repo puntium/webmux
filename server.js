@@ -40,20 +40,31 @@ class Session {
     this.serialize = new SerializeAddon();
     this.term.loadAddon(this.serialize);
 
+    const env = {
+      ...process.env,
+      // Shimmed xclip/xsel serve the browser clipboard to CLIs like Claude
+      // Code. DISPLAY is faked so clipboard readers don't bail early on a
+      // headless host (real X clients would fail anyway).
+      PATH: `${SHIM_DIR}:${process.env.PATH}`,
+      WEBMUX_CLIPBOARD_DIR: PASTE_DIR,
+      DISPLAY: process.env.DISPLAY || ':0',
+    };
+    // The server may itself run under tmux; hide that from sessions so a
+    // nested `tmux` starts cleanly and CLIs don't adapt to a mux they can't
+    // actually see.
+    delete env.TMUX;
+    delete env.TMUX_PANE;
+    if (env.TERM_PROGRAM === 'tmux') {
+      delete env.TERM_PROGRAM;
+      delete env.TERM_PROGRAM_VERSION;
+    }
+
     this.pty = pty.spawn(SHELL, [], {
       name: 'xterm-256color',
       cols,
       rows,
       cwd: process.env.HOME,
-      env: {
-        ...process.env,
-        // Shimmed xclip/xsel serve the browser clipboard to CLIs like Claude
-        // Code. DISPLAY is faked so clipboard readers don't bail early on a
-        // headless host (real X clients would fail anyway).
-        PATH: `${SHIM_DIR}:${process.env.PATH}`,
-        WEBMUX_CLIPBOARD_DIR: PASTE_DIR,
-        DISPLAY: process.env.DISPLAY || ':0',
-      },
+      env,
     });
 
     this.pty.onData((data) => {
