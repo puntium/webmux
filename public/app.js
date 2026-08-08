@@ -1,40 +1,60 @@
-/* webmux client — tmux-style split layout, one xterm.js instance per pane.
-   Layout is a binary tree: leaves are panes (sessions), internal nodes are
-   splits with a direction and ratio, resizable by dragging the divider.
-   Sessions live on the server; the tree is saved to localStorage so a reload
-   restores both the sessions (from headless snapshots) and the arrangement. */
+/* webmux client — tmux-style split layout with tabbed panes.
+   Layout is a binary tree: internal nodes are splits with a direction and
+   ratio (resizable by dragging the divider); leaves are panes, each holding a
+   tabbed set of sessions with one active tab. Tabs can be dragged between
+   panes (and reordered within one), but dropping never creates a new split —
+   splits happen only via the explicit ↔ / ↕ buttons. Sessions live on the
+   server; the tree is saved to localStorage so a reload restores both the
+   sessions (from headless snapshots) and the arrangement. */
 
 const layoutEl = document.getElementById('layout');
 const statusEl = document.getElementById('status');
 const tiles = new Map(); // sessionId -> tile
 const MIN_PANE_PX = 110;
 
-// tree: { type:'pane', session } | { type:'split', dir:'row'|'col', ratio, a, b }
+// tree: { type:'pane', tabs:[id], active:id } | { type:'split', dir:'row'|'col', ratio, a, b }
 let tree = null;
+let focusedPane = null; // pane node that last had user interaction
+let dragSessionId = null; // session id of the tab being dragged, if any
 
 // ---------------------------------------------------------------------------
 // Layout tree helpers
 // ---------------------------------------------------------------------------
 
-const leaf = (id) => ({ type: 'pane', session: id });
+const paneNode = (id) => ({ type: 'pane', tabs: [id], active: id });
 
-function splitLeaf(node, id, dir, newNode) {
+function treeContains(node, target) {
+  if (!node || !target) return false;
+  if (node === target) return true;
+  return node.type === 'split' && (treeContains(node.a, target) || treeContains(node.b, target));
+}
+
+function findPane(node, sessionId) {
+  if (!node) return null;
+  if (node.type === 'pane') return node.tabs.includes(sessionId) ? node : null;
+  return findPane(node.a, sessionId) || findPane(node.b, sessionId);
+}
+
+function firstPane(node) {
+  if (!node) return null;
+  return node.type === 'pane' ? node : firstPane(node.a) || firstPane(node.b);
+}
+
+function replaceNode(node, target, replacement) {
   if (!node) return node;
-  if (node.type === 'pane') {
-    return node.session === id
-      ? { type: 'split', dir, ratio: 0.5, a: node, b: newNode }
-      : node;
+  if (node === target) return replacement;
+  if (node.type === 'split') {
+    node.a = replaceNode(node.a, target, replacement);
+    node.b = replaceNode(node.b, target, replacement);
   }
-  node.a = splitLeaf(node.a, id, dir, newNode);
-  node.b = splitLeaf(node.b, id, dir, newNode);
   return node;
 }
 
-function pruneLeaf(node, id) {
+function pruneEmpty(node) {
   if (!node) return null;
-  if (node.type === 'pane') return node.session === id ? null : node;
-  const a = pruneLeaf(node.a, id);
-  const b = pruneLeaf(node.b, id);
+  if (node.type === 'pane') return node.tabs.length ? node : null;
+  const a = pruneEmpty(node.a);
+  const b = pruneEmpty(node.b);
   if (!a) return b; // sibling takes the whole area
   if (!b) return a;
   node.a = a;
@@ -44,17 +64,44 @@ function pruneLeaf(node, id) {
 
 function collectIds(node, out = []) {
   if (!node) return out;
-  if (node.type === 'pane') out.push(node.session);
+  if (node.type === 'pane') out.push(...node.tabs);
   else { collectIds(node.a, out); collectIds(node.b, out); }
   return out;
+}
+
+function removeSessionFromTree(sessionId) {
+  const pane = findPane(tree, sessionId);
+  if (!pane) return;
+  const i = pane.tabs.indexOf(sessionId);
+  pane.tabs.splice(i, 1);
+  if (pane.active === sessionId) {
+    pane.active = pane.tabs[Math.min(i, pane.tabs.length - 1)] ?? null;
+  }
+  tree = pruneEmpty(tree);
 }
 
 function saveLayout() {
   localStorage.setItem('webmux-layout', JSON.stringify(tree));
 }
 
+// Accepts the pre-tabs format ({ type:'pane', session }) and upgrades it.
+function migrate(node) {
+  if (!node || !node.type) return null;
+  if (node.type === 'pane') {
+    if (node.session != null) return paneNode(node.session);
+    if (!Array.isArray(node.tabs) || node.tabs.length === 0) return null;
+    if (!node.tabs.includes(node.active)) node.active = node.tabs[0];
+    return node;
+  }
+  node.a = migrate(node.a);
+  node.b = migrate(node.b);
+  if (!node.a) return node.b;
+  if (!node.b) return node.a;
+  return node;
+}
+
 function loadLayout() {
-  try { return JSON.parse(localStorage.getItem('webmux-layout')); }
+  try { return migrate(JSON.parse(localStorage.getItem('webmux-layout'))); }
   catch { return null; }
 }
 
@@ -73,9 +120,9 @@ function render() {
 
 function buildNode(node) {
   if (node.type === 'pane') {
-    const tile = tiles.get(node.session);
-    tile.root.style.flex = '1 1 0';
-    return tile.root;
+    const el = buildPane(node);
+    el.style.flex = '1 1 0';
+    return el;
   }
   const el = document.createElement('div');
   el.className = `split ${node.dir}`;
@@ -85,6 +132,144 @@ function buildNode(node) {
   b.style.flex = `${1 - node.ratio} 1 0`;
   el.append(a, makeDivider(node, a, b), b);
   return el;
+}
+
+function buildPane(node) {
+  const el = document.createElement('div');
+  el.className = 'pane';
+
+  const bar = document.createElement('div');
+  bar.className = 'pane-bar';
+
+  const tabsEl = document.createElement('div');
+  tabsEl.className = 'tabs';
+  for (const id of node.tabs) tabsEl.appendChild(buildTab(node, id));
+
+  const newTab = document.createElement('button');
+  newTab.className = 'new-tab';
+  newTab.title = 'New terminal tab';
+  newTab.textContent = '+';
+  newTab.addEventListener('click', () => newTabInPane(node));
+
+  const actions = document.createElement('span');
+  actions.className = 'pane-actions';
+  actions.innerHTML = `
+    <button class="split-h" title="Split side by side">↔</button>
+    <button class="split-v" title="Split stacked">↕</button>`;
+  actions.querySelector('.split-h').addEventListener('click', () => splitPane(node, 'row'));
+  actions.querySelector('.split-v').addEventListener('click', () => splitPane(node, 'col'));
+
+  bar.append(tabsEl, newTab, actions);
+
+  const body = document.createElement('div');
+  body.className = 'pane-body';
+  const active = tiles.get(node.active);
+  if (active) body.appendChild(active.root);
+
+  el.append(bar, body);
+  el.addEventListener('pointerdown', () => { focusedPane = node; }, true);
+
+  // A dragged tab can be dropped anywhere on this pane; unless it lands on a
+  // specific tab (handled in buildTab), it is appended at the end. Panes are
+  // the only drop targets — dropping never creates a new split.
+  el.addEventListener('dragover', (ev) => {
+    if (dragSessionId == null) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'move';
+    el.classList.add('drop-target');
+  });
+  el.addEventListener('dragleave', (ev) => {
+    if (!el.contains(ev.relatedTarget)) el.classList.remove('drop-target');
+  });
+  el.addEventListener('drop', (ev) => {
+    if (dragSessionId == null) return;
+    ev.preventDefault();
+    el.classList.remove('drop-target');
+    moveTab(dragSessionId, node, node.tabs.length);
+  });
+
+  return el;
+}
+
+function buildTab(node, id) {
+  const tab = document.createElement('div');
+  tab.className = 'tab' + (id === node.active ? ' active' : '');
+  tab.draggable = true;
+  tab.title = `session ${id}`;
+
+  const label = document.createElement('span');
+  label.className = 'tab-label';
+  label.textContent = id;
+  const close = document.createElement('button');
+  close.className = 'tab-close';
+  close.title = 'Kill session';
+  close.textContent = '✕';
+  tab.append(label, close);
+
+  tab.addEventListener('click', () => {
+    if (node.active !== id) {
+      node.active = id;
+      saveLayout();
+      render();
+    }
+    tiles.get(id)?.term?.focus();
+  });
+  close.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    removeTile(id, true);
+  });
+
+  tab.addEventListener('dragstart', (ev) => {
+    dragSessionId = id;
+    ev.dataTransfer.setData('text/plain', id);
+    ev.dataTransfer.effectAllowed = 'move';
+    tab.classList.add('dragging');
+  });
+  tab.addEventListener('dragend', () => {
+    dragSessionId = null;
+    tab.classList.remove('dragging');
+    document.querySelectorAll('.drop-target, .drop-before, .drop-after')
+      .forEach((n) => n.classList.remove('drop-target', 'drop-before', 'drop-after'));
+  });
+
+  // Dropping on a tab inserts before or after it depending on which half of
+  // the tab the pointer is over.
+  const dropAfter = (ev) => ev.clientX > tab.getBoundingClientRect().left + tab.offsetWidth / 2;
+  tab.addEventListener('dragover', (ev) => {
+    if (dragSessionId == null) return;
+    ev.preventDefault();
+    const after = dropAfter(ev);
+    tab.classList.toggle('drop-before', !after);
+    tab.classList.toggle('drop-after', after);
+  });
+  tab.addEventListener('dragleave', () => tab.classList.remove('drop-before', 'drop-after'));
+  tab.addEventListener('drop', (ev) => {
+    if (dragSessionId == null) return;
+    ev.preventDefault();
+    ev.stopPropagation(); // the pane's drop handler would append instead
+    tab.classList.remove('drop-before', 'drop-after');
+    moveTab(dragSessionId, node, node.tabs.indexOf(id) + (dropAfter(ev) ? 1 : 0));
+  });
+
+  return tab;
+}
+
+function moveTab(sessionId, targetPane, index) {
+  const src = findPane(tree, sessionId);
+  if (!src) return;
+  const from = src.tabs.indexOf(sessionId);
+  src.tabs.splice(from, 1);
+  if (src === targetPane && index > from) index--;
+  if (src !== targetPane && src.active === sessionId) {
+    src.active = src.tabs[Math.min(from, src.tabs.length - 1)] ?? null;
+  }
+  targetPane.tabs.splice(index, 0, sessionId);
+  targetPane.active = sessionId;
+  focusedPane = targetPane;
+  tree = pruneEmpty(tree); // the source pane may now be empty
+  saveLayout();
+  render();
+  tiles.get(sessionId)?.term?.focus();
 }
 
 function makeDivider(node, elA, elB) {
@@ -170,22 +355,13 @@ async function syncClipboardImage() {
 window.addEventListener('focus', syncClipboardImage);
 
 // ---------------------------------------------------------------------------
-// Tiles (pane DOM + terminal + websocket)
+// Tiles (terminal DOM + xterm + websocket, one per session)
 // ---------------------------------------------------------------------------
 
 function makeTile(sessionId) {
   const root = document.createElement('div');
   root.className = 'tile';
-  root.innerHTML = `
-    <div class="tile-bar">
-      <span>session ${sessionId}</span>
-      <span class="tile-actions">
-        <button class="split-h" title="Split side by side">↔</button>
-        <button class="split-v" title="Split stacked">↕</button>
-        <button class="close" title="Kill session">✕</button>
-      </span>
-    </div>
-    <div class="term-holder"></div>`;
+  root.innerHTML = `<div class="term-holder"></div>`;
 
   const tile = {
     root,
@@ -325,17 +501,15 @@ function makeTile(sessionId) {
       }
     },
     fitAndReport() {
-      if (!this.term) return;
+      // Background tabs are detached from the DOM; fitting them is
+      // meaningless (zero-size) and would corrupt the terminal geometry.
+      if (!this.term || !root.isConnected) return;
       try { this.fit.fit(); } catch { return; }
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: 'resize', cols: this.term.cols, rows: this.term.rows }));
       }
     },
   };
-
-  root.querySelector('.split-h').addEventListener('click', () => splitPane(sessionId, 'row'));
-  root.querySelector('.split-v').addEventListener('click', () => splitPane(sessionId, 'col'));
-  root.querySelector('.close').addEventListener('click', () => removeTile(sessionId, true));
 
   tiles.set(sessionId, tile);
   return tile;
@@ -351,7 +525,7 @@ async function removeTile(sessionId, killServerSession) {
   if (killServerSession) {
     await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {});
   }
-  tree = pruneLeaf(tree, sessionId);
+  removeSessionFromTree(sessionId);
   saveLayout();
   render();
 }
@@ -370,19 +544,34 @@ async function createServerSession() {
   return id;
 }
 
-async function splitPane(sessionId, dir) {
+async function splitPane(pane, dir) {
   const id = await createServerSession();
   makeTile(id);
-  tree = splitLeaf(tree, sessionId, dir, leaf(id));
+  const fresh = paneNode(id);
+  tree = replaceNode(tree, pane, { type: 'split', dir, ratio: 0.5, a: pane, b: fresh });
+  focusedPane = fresh;
   saveLayout();
   render();
 }
 
-async function newSession() {
+async function newTabInPane(pane) {
   const id = await createServerSession();
   makeTile(id);
-  const dir = layoutEl.clientWidth > layoutEl.clientHeight ? 'row' : 'col';
-  tree = tree ? { type: 'split', dir, ratio: 0.5, a: tree, b: leaf(id) } : leaf(id);
+  pane.tabs.push(id);
+  pane.active = id;
+  focusedPane = pane;
+  saveLayout();
+  render();
+}
+
+// Header button: open a tab in the focused pane (never a new split).
+async function newSession() {
+  const pane = treeContains(tree, focusedPane) ? focusedPane : firstPane(tree);
+  if (pane) return newTabInPane(pane);
+  const id = await createServerSession();
+  makeTile(id);
+  tree = paneNode(id);
+  focusedPane = tree;
   saveLayout();
   render();
 }
@@ -397,15 +586,16 @@ async function attachExisting() {
 
   tree = loadLayout();
   for (const id of collectIds(tree)) {
-    if (!liveSet.has(id)) tree = pruneLeaf(tree, id); // stale pane, session is gone
+    if (!liveSet.has(id)) removeSessionFromTree(id); // stale tab, session is gone
   }
   const inTree = new Set(collectIds(tree));
   for (const id of live) {
-    if (inTree.has(id)) continue; // session opened elsewhere — add it to the layout
-    const dir = layoutEl.clientWidth > layoutEl.clientHeight ? 'row' : 'col';
-    tree = tree ? { type: 'split', dir, ratio: 0.5, a: tree, b: leaf(id) } : leaf(id);
+    if (inTree.has(id)) continue; // session opened elsewhere — tab it into the first pane
+    if (tree) firstPane(tree).tabs.push(id);
+    else tree = paneNode(id);
   }
 
+  focusedPane = firstPane(tree);
   for (const id of collectIds(tree)) makeTile(id);
   saveLayout();
   render();
