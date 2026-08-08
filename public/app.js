@@ -374,6 +374,7 @@ function makeTile(sessionId) {
 
       const term = new Terminal({
         cursorBlink: true,
+        fontFamily: TERM_FONT,
         fontSize: 13,
         scrollback: 5000,
         theme: { background: '#1f1f2b' },
@@ -610,4 +611,32 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(fitAll, 100);
 });
 
-attachExisting();
+// xterm measures the cell grid from the font at open(); if the webfont isn't
+// ready yet the grid is sized from the fallback font and glyphs misalign.
+// Wait for it (bounded, in case the font 404s), then re-measure any terminals
+// that were opened before a late-arriving font.
+const TERM_FONT = '"JetBrainsMono Nerd Font", monospace';
+
+async function start() {
+  try {
+    await Promise.race([
+      Promise.all([
+        document.fonts.load('13px "JetBrainsMono Nerd Font"'),
+        document.fonts.load('bold 13px "JetBrainsMono Nerd Font"'),
+      ]),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch { /* fall back to monospace */ }
+  await attachExisting();
+  document.fonts.ready.then(() => {
+    for (const tile of tiles.values()) {
+      if (!tile.term) continue;
+      // re-assigning forces xterm to re-measure with the now-loaded font
+      tile.term.options.fontFamily = 'monospace';
+      tile.term.options.fontFamily = TERM_FONT;
+    }
+    fitAll();
+  });
+}
+
+start();

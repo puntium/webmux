@@ -5,7 +5,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>webmux</title>
   <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" />
+  <link rel="preload" href="/fonts/JetBrainsMonoNerdFont-Regular.woff2" as="font" type="font/woff2" crossorigin />
   <style>
+    @font-face {
+      font-family: 'JetBrainsMono Nerd Font';
+      src: url('/fonts/JetBrainsMonoNerdFont-Regular.woff2') format('woff2');
+      font-weight: normal;
+      font-style: normal;
+    }
+    @font-face {
+      font-family: 'JetBrainsMono Nerd Font';
+      src: url('/fonts/JetBrainsMonoNerdFont-Bold.woff2') format('woff2');
+      font-weight: bold;
+      font-style: normal;
+    }
+    @font-face {
+      font-family: 'JetBrainsMono Nerd Font';
+      src: url('/fonts/JetBrainsMonoNerdFont-Italic.woff2') format('woff2');
+      font-weight: normal;
+      font-style: italic;
+    }
+    @font-face {
+      font-family: 'JetBrainsMono Nerd Font';
+      src: url('/fonts/JetBrainsMonoNerdFont-BoldItalic.woff2') format('woff2');
+      font-weight: bold;
+      font-style: italic;
+    }
     :root {
       --bg: #16161e;
       --panel: #1f1f2b;
