@@ -1,0 +1,19 @@
+{
+  "name": "webmux",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tiled xterm.js sessions with server-side persistent state via xterm-headless",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@xterm/addon-serialize": "^0.13.0",
+    "@xterm/headless": "^5.5.0",
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "express": "^4.21.2",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  }
+}

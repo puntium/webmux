@@ -1,0 +1,37 @@
+#!/bin/sh
+# webmux xclip shim — serves the image last pasted into the webmux browser tab.
+# Claude Code (and friends) read the clipboard by spawning
+#   xclip -selection clipboard -t image/png -o
+# This shim sits first in PATH inside webmux sessions and answers those reads
+# from $WEBMUX_CLIPBOARD_DIR/clipboard, written by the webmux server whenever
+# an image is pasted in the browser.
+
+CLIP="${WEBMUX_CLIPBOARD_DIR:-/tmp/webmux-pastes}/clipboard"
+MIME_FILE="$CLIP.mime"
+
+target=""
+out=0
+prev=""
+for a in "$@"; do
+  [ "$prev" = "-t" ] || [ "$prev" = "-target" ] && target="$a"
+  case "$a" in -o|-out|-output) out=1 ;; esac
+  prev="$a"
+done
+
+if [ "$out" = "1" ]; then
+  mime=$(cat "$MIME_FILE" 2>/dev/null || echo image/png)
+  case "$target" in
+    TARGETS)
+      printf 'TARGETS\n%s\n' "$mime"
+      exit 0 ;;
+    ""|image/*)
+      [ -f "$CLIP" ] && exec cat "$CLIP"
+      exit 1 ;;
+    *)
+      exit 1 ;;
+  esac
+fi
+
+# Clipboard writes (-i / default mode): swallow stdin so callers don't break.
+cat >/dev/null 2>&1
+exit 0

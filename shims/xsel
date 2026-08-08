@@ -1,0 +1,10 @@
+#!/bin/sh
+# webmux xsel shim — same clipboard slot as the xclip shim (see ./xclip).
+CLIP="${WEBMUX_CLIPBOARD_DIR:-/tmp/webmux-pastes}/clipboard"
+case " $* " in
+  *" -o "*|*" --output "*)
+    [ -f "$CLIP" ] && exec cat "$CLIP"
+    exit 1 ;;
+esac
+cat >/dev/null 2>&1
+exit 0
