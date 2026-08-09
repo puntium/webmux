@@ -235,6 +235,115 @@ app.post('/api/paste', (req, res) => {
   res.json({ path: file });
 });
 
+// ---------------------------------------------------------------------------
+// File browser API (Miller-columns widget). No sandboxing: terminals already
+// expose the whole filesystem, so these endpoints match that trust level.
+// ---------------------------------------------------------------------------
+
+const HOME = process.env.HOME || os.homedir();
+const FS_LIST_MAX = 2000;
+const TEXT_PREVIEW_BYTES = 64 * 1024;
+const IMAGE_MIME = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon',
+  avif: 'image/avif',
+};
+
+function resolveFsPath(p) {
+  if (!p || typeof p !== 'string' || p === '~') return HOME;
+  if (p.startsWith('~/')) return path.join(HOME, p.slice(2));
+  return path.resolve(p);
+}
+
+app.get('/api/fs/list', (req, res) => {
+  const dir = resolveFsPath(req.query.path);
+  let dirents;
+  try { dirents = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch (err) { return res.status(400).json({ error: err.code || String(err) }); }
+  const entries = dirents.map((d) => {
+    const e = { name: d.name, type: d.isDirectory() ? 'dir' : 'file' };
+    if (d.isSymbolicLink()) {
+      e.symlink = true;
+      // classify by target so symlinked dirs are drillable; broken links stay files
+      try { if (fs.statSync(path.join(dir, d.name)).isDirectory()) e.type = 'dir'; } catch {}
+    }
+    return e;
+  });
+  entries.sort((a, b) => (a.type === b.type
+    ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    : a.type === 'dir' ? -1 : 1));
+  res.json({
+    path: dir,
+    entries: entries.slice(0, FS_LIST_MAX),
+    truncated: entries.length > FS_LIST_MAX,
+  });
+});
+
+app.get('/api/fs/preview', (req, res) => {
+  const file = resolveFsPath(req.query.path);
+  let st;
+  try { st = fs.statSync(file); }
+  catch (err) { return res.status(400).json({ error: err.code || String(err) }); }
+  const base = { size: st.size, mtime: st.mtimeMs };
+  if (!st.isFile()) return res.json({ kind: 'other', ...base });
+  if (IMAGE_MIME[path.extname(file).slice(1).toLowerCase()]) {
+    return res.json({ kind: 'image', ...base });
+  }
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(Math.min(st.size, TEXT_PREVIEW_BYTES));
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const head = buf.subarray(0, n);
+    if (head.includes(0)) return res.json({ kind: 'binary', ...base });
+    res.json({ kind: 'text', content: head.toString('utf8'), truncated: n < st.size, ...base });
+  } catch (err) {
+    res.status(400).json({ error: err.code || String(err) });
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+});
+
+// Upload from the file browser (drag-drop / paste): raw body written into
+// ?dir under ?name, deduped Finder-style ("name (1).ext") on collision. The
+// client always sends application/octet-stream so the global JSON body parser
+// stays out of the way.
+function uniqueName(dir, name) {
+  const base = path.basename(name || 'file');
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  let candidate = base;
+  for (let i = 1; fs.existsSync(path.join(dir, candidate)); i++) {
+    candidate = `${stem} (${i})${ext}`;
+  }
+  return candidate;
+}
+
+app.post('/api/fs/upload', express.raw({ type: () => true, limit: '200mb' }), (req, res) => {
+  const dir = resolveFsPath(req.query.dir);
+  const name = uniqueName(dir, req.query.name);
+  const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  try {
+    fs.writeFileSync(path.join(dir, name), data);
+  } catch (err) {
+    return res.status(400).json({ error: err.code || String(err) });
+  }
+  res.json({ name });
+});
+
+// Raw file bytes (image previews load this as <img src>).
+app.get('/api/fs/raw', (req, res) => {
+  const file = resolveFsPath(req.query.path);
+  const mime = IMAGE_MIME[path.extname(file).slice(1).toLowerCase()];
+  res.setHeader('Content-Type', mime || 'application/octet-stream');
+  fs.createReadStream(file)
+    .on('error', () => {
+      if (!res.headersSent) res.status(400);
+      res.end();
+    })
+    .pipe(res);
+});
+
 app.delete('/api/sessions/:id', (req, res) => {
   const session = sessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'not found' });

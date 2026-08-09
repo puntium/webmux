@@ -5,7 +5,17 @@
    panes (and reordered within one), but dropping never creates a new split —
    splits happen only via the explicit ↔ / ↕ buttons. Sessions live on the
    server; the tree is saved to localStorage so a reload restores both the
-   sessions (from headless snapshots) and the arrangement. */
+   sessions (from headless snapshots) and the arrangement.
+
+   Tabs hold either a terminal session (id from the server) or a client-side
+   widget (id `files-<random>`, the Miller-columns file browser implemented
+   in files-widget.js). Both kinds are represented by a "tile" with the same
+   interface: { root, openIfNeeded(), fitAndReport(), focus(), term?, ws?,
+   label?() }. */
+
+import {
+  isFilesId, createFilesWidget, makeFilesTile, discardWidgetState, pruneWidgetStates,
+} from './files-widget.js';
 
 const layoutEl = document.getElementById('layout');
 const statusEl = document.getElementById('status');
@@ -116,7 +126,7 @@ function render() {
   // xterm needs its element in the DOM before open(); open any new tiles now.
   for (const tile of tiles.values()) tile.openIfNeeded();
   fitAll();
-  setStatus(`${tiles.size} session(s)`);
+  setStatus(`${tiles.size} tab(s)`);
 }
 
 function buildNode(node) {
@@ -202,14 +212,16 @@ function buildTab(node, id) {
   const tab = document.createElement('div');
   tab.className = 'tab' + (id === node.active ? ' active' : '');
   tab.draggable = true;
-  tab.title = `session ${id}`;
+  tab.title = isFilesId(id) ? 'file browser' : `session ${id}`;
 
+  const tile = tiles.get(id);
   const label = document.createElement('span');
   label.className = 'tab-label';
-  label.textContent = id;
+  label.textContent = tile?.label ? tile.label() : id;
+  if (tile) tile.labelEl = label; // files tiles retitle the tab as you navigate
   const close = document.createElement('button');
   close.className = 'tab-close';
-  close.title = 'Kill session';
+  close.title = isFilesId(id) ? 'Close' : 'Kill session';
   close.textContent = '✕';
   tab.append(label, close);
 
@@ -219,7 +231,7 @@ function buildTab(node, id) {
       saveLayout();
       render();
     }
-    tiles.get(id)?.term?.focus();
+    tiles.get(id)?.focus();
   });
   close.addEventListener('click', (ev) => {
     ev.stopPropagation();
@@ -276,7 +288,7 @@ function moveTab(sessionId, targetPane, index) {
   tree = pruneEmpty(tree); // the source pane may now be empty
   saveLayout();
   render();
-  tiles.get(sessionId)?.term?.focus();
+  tiles.get(sessionId)?.focus();
 }
 
 function makeDivider(node, elA, elB) {
@@ -376,6 +388,7 @@ function makeTile(sessionId) {
     fit: null,
     ws: null,
     exited: false,
+    focus() { this.term?.focus(); },
     openIfNeeded() {
       if (this.term || !root.isConnected) return;
 
@@ -530,9 +543,10 @@ async function removeTile(sessionId, killServerSession) {
   try { tile.ws?.close(); } catch {}
   tile.term?.dispose();
   tile.root.remove();
-  if (killServerSession) {
+  if (killServerSession && !isFilesId(sessionId)) {
     await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {});
   }
+  discardWidgetState(sessionId);
   removeSessionFromTree(sessionId);
   saveLayout();
   render();
@@ -584,6 +598,24 @@ async function newSession() {
   render();
 }
 
+// Header button: file browser tab in the focused pane, like newSession.
+function newFilesSession() {
+  const pane = treeContains(tree, focusedPane) ? focusedPane : firstPane(tree);
+  const id = createFilesWidget();
+  tiles.set(id, makeFilesTile(id));
+  if (pane) {
+    pane.tabs.push(id);
+    pane.active = id;
+    focusedPane = pane;
+  } else {
+    tree = paneNode(id);
+    focusedPane = tree;
+  }
+  saveLayout();
+  render();
+  tiles.get(id).focus();
+}
+
 // ---------------------------------------------------------------------------
 // Startup: reconcile saved layout with live server sessions
 // ---------------------------------------------------------------------------
@@ -594,7 +626,8 @@ async function attachExisting() {
 
   tree = loadLayout();
   for (const id of collectIds(tree)) {
-    if (!liveSet.has(id)) removeSessionFromTree(id); // stale tab, session is gone
+    // stale terminal tab, session is gone (files tabs live client-side only)
+    if (!isFilesId(id) && !liveSet.has(id)) removeSessionFromTree(id);
   }
   const inTree = new Set(collectIds(tree));
   for (const id of live) {
@@ -604,13 +637,24 @@ async function attachExisting() {
   }
 
   focusedPane = firstPane(tree);
-  for (const id of collectIds(tree)) makeTile(id);
+  for (const id of collectIds(tree)) {
+    if (isFilesId(id)) tiles.set(id, makeFilesTile(id));
+    else makeTile(id);
+  }
+  pruneWidgetStates(new Set(tiles.keys())); // drop state orphaned by closed tabs
   saveLayout();
   render();
   if (!tree) await newSession();
 }
 
 document.getElementById('new-session').addEventListener('click', newSession);
+document.getElementById('new-files').addEventListener('click', newFilesSession);
+
+// A file dropped outside a widget's drop zone must not navigate the page
+// away from webmux (the browser default). Real targets handled it earlier
+// in the bubble phase.
+window.addEventListener('dragover', (ev) => ev.preventDefault());
+window.addEventListener('drop', (ev) => ev.preventDefault());
 
 let resizeTimer;
 window.addEventListener('resize', () => {
