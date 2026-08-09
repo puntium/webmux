@@ -165,10 +165,10 @@ function buildPane(node) {
   const actions = document.createElement('span');
   actions.className = 'pane-actions';
   actions.innerHTML = `
-    <button class="split-h" title="Split side by side">↔</button>
-    <button class="split-v" title="Split stacked">↕</button>`;
-  actions.querySelector('.split-h').addEventListener('click', () => splitPane(node, 'row'));
-  actions.querySelector('.split-v').addEventListener('click', () => splitPane(node, 'col'));
+    <button class="split-h" title="Split side by side (shift: move current tab)">↔</button>
+    <button class="split-v" title="Split stacked (shift: move current tab)">↕</button>`;
+  actions.querySelector('.split-h').addEventListener('click', (ev) => splitPane(node, 'row', ev.shiftKey));
+  actions.querySelector('.split-v').addEventListener('click', (ev) => splitPane(node, 'col', ev.shiftKey));
 
   bar.append(tabsEl, newTab, actions);
 
@@ -566,14 +566,27 @@ async function createServerSession() {
   return id;
 }
 
-async function splitPane(pane, dir) {
-  const id = await createServerSession();
-  makeTile(id);
-  const fresh = paneNode(id);
+// Shift-clicking a split button moves the pane's current tab into the new
+// split instead of spawning a fresh terminal (only when other tabs remain —
+// a pane can't be left empty).
+async function splitPane(pane, dir, moveActiveTab = false) {
+  let fresh;
+  if (moveActiveTab && pane.tabs.length > 1) {
+    const id = pane.active;
+    const i = pane.tabs.indexOf(id);
+    pane.tabs.splice(i, 1);
+    pane.active = pane.tabs[Math.min(i, pane.tabs.length - 1)];
+    fresh = paneNode(id);
+  } else {
+    const id = await createServerSession();
+    makeTile(id);
+    fresh = paneNode(id);
+  }
   tree = replaceNode(tree, pane, { type: 'split', dir, ratio: 0.5, a: pane, b: fresh });
   focusedPane = fresh;
   saveLayout();
   render();
+  tiles.get(fresh.active)?.focus();
 }
 
 async function newTabInPane(pane) {
