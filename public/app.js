@@ -398,6 +398,52 @@ async function writeHostClipboard(text) {
   setStatus(ok ? 'clipboard set from terminal' : 'clipboard write blocked by the browser');
 }
 
+// Clicking a detected URL in a terminal pops this chooser instead of xterm's
+// default open-immediately behavior. Returns focus to the terminal on close.
+function showLinkModal(uri, tile) {
+  const overlay = document.createElement('div');
+  overlay.className = 'link-modal-overlay';
+  overlay.innerHTML = `
+    <div class="link-modal" role="dialog" aria-label="Link options">
+      <div class="link-url"></div>
+      <div class="link-actions">
+        <button class="link-cancel">Cancel</button>
+        <button class="link-copy">Copy</button>
+        <button class="link-open primary">Open in new tab</button>
+      </div>
+    </div>`;
+  overlay.querySelector('.link-url').textContent = uri;
+
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey, true);
+    tile?.focus();
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) close();
+  });
+  overlay.querySelector('.link-cancel').addEventListener('click', close);
+  overlay.querySelector('.link-copy').addEventListener('click', () => {
+    close(); // close first: execCommand fallback needs focus off the modal
+    writeHostClipboard(uri);
+  });
+  overlay.querySelector('.link-open').addEventListener('click', () => {
+    window.open(uri, '_blank', 'noopener');
+    close();
+  });
+
+  document.body.appendChild(overlay);
+  overlay.querySelector('.link-open').focus();
+}
+
 // ---------------------------------------------------------------------------
 // Tiles (terminal DOM + xterm + websocket, one per session)
 // ---------------------------------------------------------------------------
@@ -432,6 +478,14 @@ function makeTile(sessionId) {
       });
       const fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
+
+      // URL detection: the web-links addon underlines http(s) URLs on hover;
+      // a click lands here instead of opening directly, so the user chooses
+      // between copying and opening.
+      term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => {
+        ev.preventDefault();
+        showLinkModal(uri, this);
+      }));
 
       // OSC 52 (ESC ] 52 ; <target> ; <base64> BEL): programs setting the
       // terminal clipboard land on the browser host's clipboard. Reads

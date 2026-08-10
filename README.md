@@ -46,6 +46,8 @@ Optional config lives in `config.yaml` (gitignored; copy
 - Drag the divider between panes to resize them.
 - **✕** on a pane kills that session (`DELETE /api/sessions/:id`).
 - Reload the page: all live sessions reattach with state and layout intact.
+- Click a URL in a terminal (underlined on hover, via `@xterm/addon-web-links`)
+  to get a chooser: copy it to the clipboard or open it in a new browser tab.
 
 ## File browser
 

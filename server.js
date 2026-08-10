@@ -253,6 +253,7 @@ app.use(express.json({ limit: '30mb' })); // pasted images arrive as base64 JSON
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules/@xterm/xterm')));
 app.use('/vendor/addon-fit', express.static(path.join(__dirname, 'node_modules/@xterm/addon-fit')));
+app.use('/vendor/addon-web-links', express.static(path.join(__dirname, 'node_modules/@xterm/addon-web-links')));
 
 app.get('/api/sessions', (_req, res) => {
   res.json([...sessions.values()].map((s) => ({
