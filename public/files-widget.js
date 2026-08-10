@@ -5,9 +5,9 @@
    localStorage next to the layout. Columns show the ancestor chain of `dir`;
    the cursor entry gets one extra column — a listing for directories, a
    preview (text/image/stat) for files. Arrows / hjkl navigate like yazi.
-   Files dragged onto a column upload into that column's directory; files or
-   images pasted while the widget is focused upload into the rightmost
-   directory shown.
+   Files or folders dragged onto a column upload into that column's
+   directory (folders recreate their tree); files or images pasted while
+   the widget is focused upload into the rightmost directory shown.
 
    app.js owns the layout/tab machinery and registers the tile returned by
    makeFilesTile() — the tile interface it expects is
@@ -72,17 +72,40 @@ function formatSize(bytes) {
 }
 
 // Native file drops only — tab drags (text/plain) must fall through to the
-// pane's own drop handling. Directories can't be uploaded; filter them out.
-function dropFiles(ev) {
+// pane's own drop handling. Dropped directories are walked recursively so
+// their contents upload under matching relative paths. Uploads are
+// { file, name } pairs where name may contain '/' for files inside a
+// dropped folder; empty directories are not recreated.
+function entryFiles(entry, prefix) {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      entry.file((f) => resolve([{ file: f, name: prefix + f.name }]), () => resolve([]));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const batches = [];
+      const readBatch = () => reader.readEntries(async (batch) => {
+        if (!batch.length) return resolve((await Promise.all(batches)).flat());
+        for (const e of batch) batches.push(entryFiles(e, `${prefix}${entry.name}/`));
+        readBatch(); // readEntries returns ≤100 entries per call; drain it
+      }, () => resolve([]));
+      readBatch();
+    } else resolve([]);
+  });
+}
+
+async function dropFiles(ev) {
   const items = ev.dataTransfer?.items;
-  if (!items) return [...(ev.dataTransfer?.files || [])];
+  if (!items) return [...(ev.dataTransfer?.files || [])].map((f) => ({ file: f, name: f.name }));
+  // Entries must be grabbed synchronously — the dataTransfer is dead after
+  // the drop handler yields; only the entry reads may be async.
+  const entries = [...items]
+    .filter((it) => it.kind === 'file')
+    .map((it) => it.webkitGetAsEntry?.() || it.getAsFile())
+    .filter(Boolean);
   const out = [];
-  for (const it of items) {
-    if (it.kind !== 'file') continue;
-    const entry = it.webkitGetAsEntry?.();
-    if (entry?.isDirectory) continue;
-    const f = it.getAsFile();
-    if (f) out.push(f);
+  for (const e of entries) {
+    if (e instanceof File) out.push({ file: e, name: e.name });
+    else out.push(...await entryFiles(e, ''));
   }
   return out;
 }
@@ -134,11 +157,11 @@ export function makeFilesTile(id) {
         const res = await fetch(`/api/fs/upload?${q}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },
-          body: f,
+          body: f.file,
         });
         const out = await res.json();
         if (out.error) throw new Error(out.error);
-        lastName = out.name;
+        lastName = out.name.split('/')[0]; // cursor lands on the top-level entry
       } catch (err) {
         setStatus(`upload failed: ${err.message || err}`);
         return;
@@ -164,14 +187,15 @@ export function makeFilesTile(id) {
     el.addEventListener('dragleave', (ev) => {
       if (!el.contains(ev.relatedTarget)) el.classList.remove('drop-target');
     });
-    el.addEventListener('drop', (ev) => {
+    el.addEventListener('drop', async (ev) => {
       if (!ev.dataTransfer?.files.length) return; // tab drag — bubble to the pane
       ev.preventDefault();
       ev.stopPropagation();
       el.classList.remove('drop-target');
-      const files = dropFiles(ev);
-      if (!files.length) return setStatus('folders cannot be uploaded');
-      uploadTo(targetDir(), files);
+      const dir = targetDir(); // capture before the async walk; navigation may move it
+      const files = await dropFiles(ev);
+      if (!files.length) return setStatus('nothing to upload');
+      uploadTo(dir, files);
     });
   }
 
@@ -310,7 +334,8 @@ export function makeFilesTile(id) {
     const files = [...(ev.clipboardData?.items || [])]
       .filter((i) => i.kind === 'file')
       .map((i) => i.getAsFile())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((f) => ({ file: f, name: f.name }));
     if (!files.length) return;
     ev.preventDefault();
     uploadTo(rightmostDir || state.dir, files);

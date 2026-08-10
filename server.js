@@ -420,8 +420,11 @@ app.get('/api/fs/preview', (req, res) => {
 });
 
 // Upload from the file browser (drag-drop / paste): raw body written into
-// ?dir under ?name, deduped Finder-style ("name (1).ext") on collision. The
-// client always sends application/octet-stream so the global JSON body parser
+// ?dir under ?name, deduped Finder-style ("name (1).ext") on collision. A
+// name may contain '/' (folder drops upload each file with its relative
+// path); intermediate directories are created, and only the basename is
+// deduped — re-dropping a folder merges into the existing one. The client
+// always sends application/octet-stream so the global JSON body parser
 // stays out of the way.
 function uniqueName(dir, name) {
   const base = path.basename(name || 'file');
@@ -436,14 +439,21 @@ function uniqueName(dir, name) {
 
 app.post('/api/fs/upload', express.raw({ type: () => true, limit: '200mb' }), (req, res) => {
   const dir = resolveFsPath(req.query.dir);
-  const name = uniqueName(dir, req.query.name);
+  const segments = String(req.query.name || '').split('/').filter((s) => s && s !== '.');
+  if (segments.some((s) => s === '..')) {
+    return res.status(400).json({ error: 'invalid name' });
+  }
+  const base = segments.pop() || 'file';
+  const target = path.join(dir, ...segments);
   const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
   try {
-    fs.writeFileSync(path.join(dir, name), data);
+    fs.mkdirSync(target, { recursive: true });
+    const name = uniqueName(target, base);
+    fs.writeFileSync(path.join(target, name), data);
+    res.json({ name: [...segments, name].join('/') });
   } catch (err) {
-    return res.status(400).json({ error: err.code || String(err) });
+    res.status(400).json({ error: err.code || String(err) });
   }
-  res.json({ name });
 });
 
 // Raw file bytes (image previews load this as <img src>).

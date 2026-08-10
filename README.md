@@ -56,10 +56,12 @@ Finder-style Miller-columns file browser tab (one column per directory level,
 rooted at `/`, starting in `$HOME`) in the focused pane. Click to drill down,
 or navigate with the arrow keys / `hjkl` like yazi. Selecting a file shows a
 preview column — text (first 64 KB), images, or size/mtime for binaries — via
-`GET /api/fs/list`, `/api/fs/preview`, and `/api/fs/raw`. Files dragged onto
-a column upload into that column's directory, and files or images pasted
-while the browser is focused upload into the rightmost directory shown
-(`POST /api/fs/upload`, colliding names deduped Finder-style). Browser tabs
+`GET /api/fs/list`, `/api/fs/preview`, and `/api/fs/raw`. Files or folders
+dragged onto a column upload into that column's directory — multiple at
+once is fine, and folders recreate their directory tree (empty
+subdirectories are skipped). Files or images pasted while the browser is
+focused upload into the rightmost directory shown (`POST /api/fs/upload`,
+colliding names deduped Finder-style). Browser tabs
 are client-side widgets (no server session) implemented in
 `public/files-widget.js`; their path and cursor persist in localStorage
 alongside the layout, and they drag between panes like any other tab.
