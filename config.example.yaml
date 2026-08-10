@@ -5,3 +5,12 @@
 #auth:
 #  username: admin
 #  password: change-me
+
+# TLS is ON by default: a self-signed certificate is generated once into
+# .tls/ (gitignored) and reused, so accept the browser warning once per
+# machine. Uncomment to serve plain http instead:
+#tls: false
+# ...or to serve real certificates:
+#tls:
+#  cert: /path/to/fullchain.pem
+#  key: /path/to/privkey.pem

@@ -373,6 +373,31 @@ async function syncClipboardImage() {
 }
 window.addEventListener('focus', syncClipboardImage);
 
+// Write text to the host (browser) clipboard, for OSC 52 copies from
+// programs in a session. The async API needs a secure context; fall back to
+// the legacy execCommand path on plain http.
+async function writeHostClipboard(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      setStatus('clipboard set from terminal');
+      return;
+    }
+  } catch { /* fall through to execCommand */ }
+  const prevFocus = document.activeElement;
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  ta.remove();
+  prevFocus?.focus?.();
+  setStatus(ok ? 'clipboard set from terminal' : 'clipboard write blocked by the browser');
+}
+
 // ---------------------------------------------------------------------------
 // Tiles (terminal DOM + xterm + websocket, one per session)
 // ---------------------------------------------------------------------------
@@ -388,6 +413,12 @@ function makeTile(sessionId) {
     fit: null,
     ws: null,
     exited: false,
+    title: '',
+    label() { return this.title || sessionId; },
+    setTitle(title) {
+      this.title = title || '';
+      if (this.labelEl) this.labelEl.textContent = this.label();
+    },
     focus() { this.term?.focus(); },
     openIfNeeded() {
       if (this.term || !root.isConnected) return;
@@ -401,6 +432,21 @@ function makeTile(sessionId) {
       });
       const fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
+
+      // OSC 52 (ESC ] 52 ; <target> ; <base64> BEL): programs setting the
+      // terminal clipboard land on the browser host's clipboard. Reads
+      // ("?" payload) are ignored — answering would expose the clipboard to
+      // anything running in any session.
+      term.parser.registerOscHandler(52, (data) => {
+        const payload = data.slice(data.indexOf(';') + 1);
+        if (payload === '?') return true;
+        try {
+          const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+          writeHostClipboard(new TextDecoder().decode(bytes));
+        } catch { /* malformed base64 — ignore */ }
+        return true;
+      });
+
       term.open(root.querySelector('.term-holder'));
       this.term = term;
       this.fit = fit;
@@ -416,9 +462,12 @@ function makeTile(sessionId) {
         if (msg.type === 'snapshot') {
           term.reset();
           if (msg.data) term.write(msg.data);
+          this.setTitle(msg.title);
           this.fitAndReport();
         } else if (msg.type === 'output') {
           term.write(msg.data);
+        } else if (msg.type === 'title') {
+          this.setTitle(msg.title);
         } else if (msg.type === 'exit') {
           this.exited = true;
           term.write(`\r\n\x1b[31m[session exited: ${msg.exitCode}]\x1b[0m\r\n`);

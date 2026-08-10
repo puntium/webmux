@@ -24,14 +24,22 @@ buffer when no browser is attached.
 
 ```sh
 npm install   # needs make + g++ for node-pty
-npm start     # http://localhost:5000 (override with PORT=...)
+npm start     # https://localhost:5000 (override with PORT=...)
 ```
 
+The server speaks https by default: a self-signed certificate is generated
+on first start into `.tls/` (gitignored) and reused after that, so each
+browser accepts the warning once. This keeps webmux a secure context, which
+the async clipboard APIs (image paste sync, OSC 52 copies) require on
+non-localhost hosts.
+
 Optional config lives in `config.yaml` (gitignored; copy
-`config.example.yaml`). An `auth` section with `username` and `password`
-enables HTTP Basic auth on everything — pages, API, and WebSocket upgrades;
-without it the server is open. Plain http sends Basic credentials in the
-clear, so put anything non-local behind TLS.
+`config.example.yaml`):
+
+- `auth: {username, password}` enables HTTP Basic auth on everything —
+  pages, API, and WebSocket upgrades; without it the server is open.
+- `tls: false` serves plain http instead (Basic credentials then travel in
+  the clear); `tls: {cert, key}` serves real certificates.
 
 - **+ New terminal** adds a pane by splitting the whole layout (`POST /api/sessions`).
 - **↔ / ↕** on a pane splits it side-by-side / stacked with a new session.
@@ -60,11 +68,18 @@ WebSocket at `/ws?session=<id>`, JSON messages:
 
 | direction | type | payload |
 |---|---|---|
-| server → client | `snapshot` | serialized buffer + cols/rows (sent on attach) |
+| server → client | `snapshot` | serialized buffer + cols/rows + title (sent on attach) |
 | server → client | `output` | raw PTY output |
+| server → client | `title` | terminal title change (OSC 0/2) — shown on the tab |
 | server → client | `exit` | shell exit code |
 | client → server | `input` | keystrokes |
 | client → server | `resize` | cols/rows |
+
+Tabs are labeled with the terminal title when the running program sets one
+(OSC 0/2, e.g. shell prompts or vim), tracked server-side so titles survive
+reattach. Programs copying via OSC 52 (tmux `set-clipboard`, vim/neovim
+clipboard providers) write through to the browser's clipboard; clipboard
+*reads* via OSC 52 are ignored.
 
 ## Image paste
 

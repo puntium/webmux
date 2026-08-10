@@ -7,6 +7,7 @@
 // @xterm/addon-serialize.
 
 const http = require('http');
+const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -45,6 +46,50 @@ if (config.auth) {
     process.exit(1);
   }
   AUTH = { username: String(username), password: String(password) };
+}
+
+// TLS is on by default so browsers treat webmux as a secure context (async
+// clipboard API, OSC 52 writes). A self-signed cert is generated once and
+// persisted to .tls/ (gitignored), so the exception accepted in the browser
+// survives restarts. Config: `tls: false` for plain http, or
+// `tls: {cert, key}` to serve real certificates.
+const TLS_DIR = path.join(__dirname, '.tls');
+
+async function tlsOptions() {
+  if (config.tls === false) return null;
+  if (config.tls && typeof config.tls === 'object') {
+    const { cert, key } = config.tls;
+    if (!cert || !key) {
+      console.error(`${CONFIG_FILE}: tls requires both cert and key paths`);
+      process.exit(1);
+    }
+    return { cert: fs.readFileSync(cert), key: fs.readFileSync(key) };
+  }
+  const certFile = path.join(TLS_DIR, 'cert.pem');
+  const keyFile = path.join(TLS_DIR, 'key.pem');
+  if (!fs.existsSync(certFile) || !fs.existsSync(keyFile)) {
+    const selfsigned = require('selfsigned');
+    const pems = await selfsigned.generate(
+      [{ name: 'commonName', value: os.hostname() }],
+      {
+        days: 3650,
+        keySize: 2048,
+        extensions: [{
+          name: 'subjectAltName',
+          altNames: [
+            { type: 2, value: 'localhost' },
+            { type: 2, value: os.hostname() },
+            { type: 7, ip: '127.0.0.1' },
+          ],
+        }],
+      },
+    );
+    fs.mkdirSync(TLS_DIR, { recursive: true });
+    fs.writeFileSync(keyFile, pems.private, { mode: 0o600 });
+    fs.writeFileSync(certFile, pems.cert);
+    console.log(`generated self-signed certificate in ${TLS_DIR}`);
+  }
+  return { cert: fs.readFileSync(certFile), key: fs.readFileSync(keyFile) };
 }
 
 // Hash before comparing so timingSafeEqual gets equal-length inputs and the
@@ -87,6 +132,18 @@ class Session {
     this.term = new Terminal({ cols, rows, scrollback: SCROLLBACK, allowProposedApi: true });
     this.serialize = new SerializeAddon();
     this.term.loadAddon(this.serialize);
+
+    // Track OSC 0/2 titles on the headless terminal so they survive
+    // disconnects (serialize doesn't capture the title); broadcast changes.
+    this.title = '';
+    this.term.onTitleChange((title) => {
+      this.title = title;
+      for (const ws of this.clients) {
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({ type: 'title', title }));
+        }
+      }
+    });
 
     const env = {
       ...process.env,
@@ -145,6 +202,7 @@ class Session {
       data: this.serialize.serialize({ scrollback: SCROLLBACK }),
       cols: this.cols,
       rows: this.rows,
+      title: this.title,
     }));
   }
 
@@ -201,6 +259,7 @@ app.get('/api/sessions', (_req, res) => {
     id: s.id,
     cols: s.cols,
     rows: s.rows,
+    title: s.title,
     createdAt: s.createdAt,
     clients: s.clients.size,
   })));
@@ -411,38 +470,46 @@ app.delete('/api/sessions/:id', (req, res) => {
 // WebSocket attach: /ws?session=<id>
 // ---------------------------------------------------------------------------
 
-const server = http.createServer(app);
-const wss = new WebSocketServer({
-  server,
-  path: '/ws',
-  // Browsers reuse cached Basic credentials on same-origin upgrade requests,
-  // so an authenticated page connects transparently.
-  verifyClient: AUTH ? ({ req }) => isAuthorized(req) : undefined,
-});
-
-wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, 'http://localhost');
-  const session = sessions.get(url.searchParams.get('session'));
-  if (!session) {
-    ws.send(JSON.stringify({ type: 'error', message: 'no such session' }));
-    ws.close();
-    return;
-  }
-
-  session.attach(ws);
-
-  ws.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-    if (msg.type === 'input') session.input(msg.data);
-    else if (msg.type === 'resize') session.resize(msg.cols, msg.rows);
-    else if (msg.type === 'paste-image') handlePasteImage(session, ws, msg);
-    else if (msg.type === 'clipboard-sync') writeClipboardSlot(msg); // slot only, no injection
+async function main() {
+  const TLS = await tlsOptions();
+  const server = TLS ? https.createServer(TLS, app) : http.createServer(app);
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    // Browsers reuse cached Basic credentials on same-origin upgrade requests,
+    // so an authenticated page connects transparently.
+    verifyClient: AUTH ? ({ req }) => isAuthorized(req) : undefined,
   });
 
-  ws.on('close', () => session.detach(ws));
-});
+  wss.on('connection', (ws, req) => {
+    const url = new URL(req.url, 'http://localhost');
+    const session = sessions.get(url.searchParams.get('session'));
+    if (!session) {
+      ws.send(JSON.stringify({ type: 'error', message: 'no such session' }));
+      ws.close();
+      return;
+    }
 
-server.listen(PORT, () => {
-  console.log(`webmux listening on http://localhost:${PORT}`);
+    session.attach(ws);
+
+    ws.on('message', (raw) => {
+      let msg;
+      try { msg = JSON.parse(raw); } catch { return; }
+      if (msg.type === 'input') session.input(msg.data);
+      else if (msg.type === 'resize') session.resize(msg.cols, msg.rows);
+      else if (msg.type === 'paste-image') handlePasteImage(session, ws, msg);
+      else if (msg.type === 'clipboard-sync') writeClipboardSlot(msg); // slot only, no injection
+    });
+
+    ws.on('close', () => session.detach(ws));
+  });
+
+  server.listen(PORT, () => {
+    console.log(`webmux listening on http${TLS ? 's' : ''}://localhost:${PORT}`);
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });
