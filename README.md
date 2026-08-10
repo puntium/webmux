@@ -27,6 +27,12 @@ npm install   # needs make + g++ for node-pty
 npm start     # http://localhost:5000 (override with PORT=...)
 ```
 
+Optional config lives in `config.yaml` (gitignored; copy
+`config.example.yaml`). An `auth` section with `username` and `password`
+enables HTTP Basic auth on everything — pages, API, and WebSocket upgrades;
+without it the server is open. Plain http sends Basic credentials in the
+clear, so put anything non-local behind TLS.
+
 - **+ New terminal** adds a pane by splitting the whole layout (`POST /api/sessions`).
 - **↔ / ↕** on a pane splits it side-by-side / stacked with a new session.
 - Drag the divider between panes to resize them.
@@ -85,6 +91,6 @@ sends a literal `^V` (vim visual-block). The clipboard image is also
 proactively synced to the server slot on window focus where the async API is
 available (browsers have no clipboardchange event).
 
-Prototype caveats: no auth, one shared resize (last attached client wins),
+Prototype caveats: one shared resize (last attached client wins),
 sessions die with the server process (no on-disk persistence), and the
 clipboard slot is global (one clipboard for all panes, like a real desktop).

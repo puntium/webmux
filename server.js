@@ -7,10 +7,12 @@
 // @xterm/addon-serialize.
 
 const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const express = require('express');
+const yaml = require('js-yaml');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const { Terminal } = require('@xterm/headless');
@@ -19,6 +21,52 @@ const { SerializeAddon } = require('@xterm/addon-serialize');
 const PORT = process.env.PORT || 5000;
 const SHELL = process.env.SHELL_CMD || process.env.SHELL || 'bash';
 const SCROLLBACK = 5000;
+
+// ---------------------------------------------------------------------------
+// Config (config.yaml, gitignored — see config.example.yaml)
+// ---------------------------------------------------------------------------
+
+const CONFIG_FILE = path.join(__dirname, 'config.yaml');
+let config = {};
+try {
+  config = yaml.load(fs.readFileSync(CONFIG_FILE, 'utf8')) || {};
+} catch (err) {
+  if (err.code !== 'ENOENT') {
+    console.error(`failed to load ${CONFIG_FILE}: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+let AUTH = null;
+if (config.auth) {
+  const { username, password } = config.auth;
+  if (!username || !password) {
+    console.error(`${CONFIG_FILE}: auth requires both username and password`);
+    process.exit(1);
+  }
+  AUTH = { username: String(username), password: String(password) };
+}
+
+// Hash before comparing so timingSafeEqual gets equal-length inputs and the
+// comparison leaks nothing about length or content.
+function secretsEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(a).digest();
+  const hb = crypto.createHash('sha256').update(b).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+function isAuthorized(req) {
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Basic ')) return false;
+  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+  const sep = decoded.indexOf(':');
+  if (sep < 0) return false;
+  // Bitwise & so both comparisons always run (no early-out on bad username).
+  return Boolean(
+    secretsEqual(decoded.slice(0, sep), AUTH.username) &
+    secretsEqual(decoded.slice(sep + 1), AUTH.password)
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Session management
@@ -136,6 +184,13 @@ function createSession(cols, rows) {
 // ---------------------------------------------------------------------------
 
 const app = express();
+if (AUTH) {
+  app.use((req, res, next) => {
+    if (isAuthorized(req)) return next();
+    res.set('WWW-Authenticate', 'Basic realm="webmux", charset="UTF-8"');
+    res.status(401).send('Authentication required');
+  });
+}
 app.use(express.json({ limit: '30mb' })); // pasted images arrive as base64 JSON
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules/@xterm/xterm')));
@@ -357,7 +412,13 @@ app.delete('/api/sessions/:id', (req, res) => {
 // ---------------------------------------------------------------------------
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  // Browsers reuse cached Basic credentials on same-origin upgrade requests,
+  // so an authenticated page connects transparently.
+  verifyClient: AUTH ? ({ req }) => isAuthorized(req) : undefined,
+});
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://localhost');

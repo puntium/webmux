@@ -1,4 +1,7 @@
 node_modules/
 
+# local config (copy config.example.yaml)
+config.yaml
+
 # runtime unix socket
 webmux

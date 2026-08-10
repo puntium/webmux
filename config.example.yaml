@@ -1,0 +1,7 @@
+# Copy to config.yaml (gitignored) to configure webmux.
+
+# Uncomment to require HTTP Basic auth for all pages, API calls, and
+# WebSocket connections. Omit the section entirely to disable auth.
+#auth:
+#  username: admin
+#  password: change-me
