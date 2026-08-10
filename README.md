@@ -97,11 +97,12 @@ the process's argv looks like `claude`.
 
 Ctrl+V is suppressed at the xterm key-handler level (xterm would otherwise
 send a bare `^V`), but the browser default is left alone — on Windows/Linux
-the native paste event that follows carries the clipboard (works on plain
-http, no permission needed): image → upload flow, text → xterm's normal
-paste. If no paste event follows (macOS, where Ctrl+V isn't a paste
-shortcut), the client falls back to `navigator.clipboard.read()`, which needs
-a secure context (localhost/https) plus clipboard permission. Ctrl+Alt+V
+the native paste event that follows carries the clipboard (no permission
+needed, works even on a `tls: false` plain-http setup): image → upload flow,
+text → xterm's normal paste. If no paste event follows (macOS, where Ctrl+V
+isn't a paste shortcut), the client falls back to
+`navigator.clipboard.read()`, which needs clipboard permission plus a secure
+context — the default https setup or localhost. Ctrl+Alt+V
 sends a literal `^V` (vim visual-block). The clipboard image is also
 proactively synced to the server slot on window focus where the async API is
 available (browsers have no clipboardchange event).
