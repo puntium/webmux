@@ -77,9 +77,47 @@ WebSocket at `/ws?session=<id>`, JSON messages:
 
 Tabs are labeled with the terminal title when the running program sets one
 (OSC 0/2, e.g. shell prompts or vim), tracked server-side so titles survive
-reattach. Programs copying via OSC 52 (tmux `set-clipboard`, vim/neovim
-clipboard providers) write through to the browser's clipboard; clipboard
-*reads* via OSC 52 are ignored.
+reattach. Programs copying via OSC 52 write through to the browser's
+clipboard (see below); clipboard *reads* via OSC 52 are ignored.
+
+## Copying to the system clipboard (OSC 52)
+
+Any program that copies via OSC 52 (vim/neovim clipboard providers, Claude
+Code's copy actions, `tmux set-buffer -w`) lands on the browser's system
+clipboard: the escape sequence travels through the PTY to the client
+unmodified, and the browser-side handler writes it with
+`navigator.clipboard.writeText`. The write needs the tab to be focused and a
+secure context (the default https setup, or localhost).
+
+**Running tmux inside a webmux pane** needs one line of tmux config to pass
+copies through:
+
+```tmux
+set -s set-clipboard on
+```
+
+tmux intercepts OSC 52 from its inner programs rather than forwarding it.
+What reaches webmux depends on `set-clipboard` (verified with tmux 3.5a):
+
+| `set-clipboard` | action inside tmux | tmux buffer | forwarded to webmux |
+|---|---|---|---|
+| `on` | program emits OSC 52 | ✅ | ✅ |
+| `external` (default) | program emits OSC 52 | ❌ dropped | ❌ |
+| `on` / `external` | `tmux set-buffer -w` / copy-mode copy | ✅ | ✅ |
+| `on` / `external` | `tmux set-buffer` (no `-w`) | ✅ | ❌ |
+
+So with the default `external`, a copy from e.g. Claude Code running inside
+tmux is silently discarded; with `on`, tmux stores it as a buffer *and*
+re-emits the OSC 52 outward, where webmux picks it up.
+
+One more prerequisite (satisfied on most systems): tmux only forwards if the
+outer terminal's terminfo advertises the `Ms` capability. webmux sessions run
+with `TERM=xterm-256color`, whose standard terminfo entry includes it; if
+yours doesn't (`infocmp -x xterm-256color | grep Ms` prints nothing), add:
+
+```tmux
+set -as terminal-overrides ',xterm-256color:Ms=\E]52;%p1%s;%p2%s\007'
+```
 
 ## Image paste
 
