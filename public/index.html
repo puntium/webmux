@@ -40,6 +40,24 @@
       --accent-yellow: #e0af68;
     }
     * { box-sizing: border-box; }
+    /* Scrollbars everywhere (terminal viewport included): transparent track,
+       light translucent pill. The transparent border + padding-box clip keeps
+       the pill slim and inset from the edge. */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-corner { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(200, 200, 216, 0.22);
+      border: 3px solid transparent;
+      background-clip: padding-box;
+      border-radius: 99px;
+    }
+    ::-webkit-scrollbar-thumb:hover { background-color: rgba(200, 200, 216, 0.4); }
+    /* Firefox (no ::-webkit-scrollbar): standard properties. Kept out of
+       Chromium, where scrollbar-color would disable the styles above. */
+    @supports not selector(::-webkit-scrollbar) {
+      * { scrollbar-width: thin; scrollbar-color: rgba(200, 200, 216, 0.25) transparent; }
+    }
     body {
       margin: 0;
       background: var(--bg);
