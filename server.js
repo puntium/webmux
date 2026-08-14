@@ -432,8 +432,12 @@ async function main() {
     ws.on('close', () => sock.destroy());
   });
 
-  server.listen(PORT, () => {
-    console.log(`webmux listening on http${TLS ? 's' : ''}://localhost:${PORT} (pty host '${HOST_NAME}')`);
+  // `bind: 127.0.0.1` restricts the server to loopback — the tunnel-only
+  // deployment (Electron client over SSH), where auth and TLS are off and
+  // sshd is the front door. Default: all interfaces, as before.
+  const BIND = config.bind || undefined;
+  server.listen(PORT, BIND, () => {
+    console.log(`webmux listening on http${TLS ? 's' : ''}://${BIND || 'localhost'}:${PORT} (pty host '${HOST_NAME}')`);
   });
 }
 

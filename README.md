@@ -52,6 +52,17 @@ Optional config lives in `config.yaml` (gitignored; copy
 - `ptyhost: <name>` picks which pty host the server fronts (default
   `default`; env `WEBMUX_PTYHOST` overrides). Different names are fully
   independent daemons, so several webmux instances can run side by side.
+- `bind: 127.0.0.1` restricts the server to loopback — for the tunnel-only
+  deployment behind the macOS Electron client (see below).
+
+### macOS client (Electron over SSH)
+
+`electron/` holds a native macOS client that reaches the server through a
+supervised SSH port forward instead of an exposed port — no TLS, no Basic
+auth, no open firewall port; your SSH key is the front door. Sessions
+survive disconnects exactly as in the browser (they live in the pty host),
+and the client reconnects automatically on network drops and laptop wake.
+Design and setup: `docs/electron-client.md`.
 
 ### Pty host lifecycle
 

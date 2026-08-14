@@ -12,6 +12,12 @@
 # side by side. Env var WEBMUX_PTYHOST overrides this.
 #ptyhost: default
 
+# Bind address (default: all interfaces). Set to 127.0.0.1 for the
+# tunnel-only deployment: the Electron client (see docs/electron-client.md)
+# reaches the server through an SSH port forward, so with auth omitted and
+# tls off, loopback-only binding makes sshd the only way in.
+#bind: 127.0.0.1
+
 # TLS is ON by default: a self-signed certificate is generated once into
 # .tls/ (gitignored) and reused, so accept the browser warning once per
 # machine. Uncomment to serve plain http instead:

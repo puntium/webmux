@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>webmux — connections</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #1e1e1e;
+    color: #ccc;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 48px 24px;
+  }
+  .wrap { width: 100%; max-width: 620px; }
+  h1 { font-size: 18px; font-weight: 600; color: #eee; margin: 0; }
+  .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .topbar .spacer { flex: 1; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; color: #999;
+    background: #262626; border: 1px solid #333; border-radius: 999px;
+    padding: 3px 12px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+  .dot.connecting { background: #d9a334; animation: pulse 1.2s ease-in-out infinite; }
+  .dot.retry { background: #c75450; }
+  .dot.failed { background: #c75450; }
+  .dot.connected { background: #55a868; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+
+  button {
+    font: inherit; font-size: 13px;
+    color: #ddd; background: #333; border: 1px solid #444; border-radius: 6px;
+    padding: 5px 14px; cursor: pointer;
+  }
+  button:hover { background: #3c3c3c; }
+  button.primary { background: #2d5d8f; border-color: #3a6ea5; color: #fff; }
+  button.primary:hover { background: #356ba3; }
+  button.danger { color: #d98a87; }
+  button.small { font-size: 12px; padding: 3px 10px; }
+
+  .card {
+    background: #252525; border: 1px solid #363636; border-radius: 8px;
+    padding: 12px 16px; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .card.active { border-color: #3a6ea5; }
+  .card .info { flex: 1; min-width: 0; }
+  .card .name { color: #eee; font-weight: 600; }
+  .card .detail {
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .empty { color: #777; text-align: center; padding: 28px 0 20px; }
+
+  form {
+    background: #252525; border: 1px solid #363636; border-radius: 8px;
+    padding: 16px; margin-bottom: 10px;
+  }
+  .row { display: flex; gap: 12px; margin-bottom: 10px; }
+  .field { flex: 1; }
+  .field.narrow { flex: 0 0 130px; }
+  label { display: block; font-size: 12px; color: #999; margin-bottom: 3px; }
+  input {
+    width: 100%;
+    font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #ddd; background: #1a1a1a; border: 1px solid #3a3a3a; border-radius: 6px;
+    padding: 6px 9px;
+  }
+  input:focus { outline: none; border-color: #3a6ea5; }
+  input::placeholder { color: #555; }
+  .form-actions { display: flex; gap: 10px; align-items: center; margin-top: 4px; }
+  .form-error { color: #d98a87; font-size: 12px; }
+  details { margin-bottom: 10px; }
+  summary { font-size: 12px; color: #777; cursor: pointer; margin-bottom: 8px; }
+
+  .status-detail { margin-top: 18px; }
+  .status-detail p { margin: 4px 0; color: #999; font-size: 13px; }
+  pre {
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #161616; border: 1px solid #333; border-radius: 6px;
+    padding: 10px 12px; color: #a08080; white-space: pre-wrap;
+    max-height: 140px; overflow-y: auto; margin: 8px 0 0;
+  }
+  .hint { font-size: 12px; color: #666; margin-top: 22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <h1>webmux</h1>
+    <span class="pill"><span class="dot" id="dot"></span><span id="statusText">idle</span></span>
+    <span class="spacer"></span>
+    <button id="backBtn" style="display:none">Back to terminal</button>
+    <button class="primary" id="newBtn">New Profile</button>
+  </div>
+
+  <div id="list"></div>
+  <div id="formHolder"></div>
+
+  <div class="status-detail" id="statusDetail"></div>
+
+  <p class="hint">
+    Key auth needs no prompt (use ssh-agent for passphrases); or save a
+    password per profile — it is stored encrypted via the macOS Keychain and
+    fed to ssh through an askpass helper. On the server:
+    <code>tls: false</code>, <code>bind: 127.0.0.1</code>, no
+    <code>auth</code> section. ⌘⇧R reconnects; ⌘⇧O reopens this page.
+  </p>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  let profiles = [];
+  let status = { state: 'idle' };
+  let editing = null; // original name of profile being edited, '' for new
+  let confirmDelete = null;
+
+  function profileDetail(p) {
+    const bits = [p.host];
+    if (p.sshPort) bits.push(`-p ${p.sshPort}`);
+    bits.push(`→ :${p.remotePort}`);
+    return bits.join(' ');
+  }
+
+  function renderList() {
+    if (editing !== null) { $('list').innerHTML = ''; return; }
+    if (!profiles.length) {
+      $('list').innerHTML = '<div class="empty">No profiles yet — create one to connect.</div>';
+      return;
+    }
+    $('list').innerHTML = profiles.map((p) => `
+      <div class="card${p.name === status.profile && status.state !== 'idle' ? ' active' : ''}">
+        <div class="info">
+          <div class="name">${esc(p.name)}</div>
+          <div class="detail">${esc(profileDetail(p))}</div>
+        </div>
+        <button class="small danger" data-del="${esc(p.name)}">${confirmDelete === p.name ? 'Sure?' : 'Delete'}</button>
+        <button class="small" data-edit="${esc(p.name)}">Edit</button>
+        <button class="small primary" data-connect="${esc(p.name)}">Connect</button>
+      </div>`).join('');
+  }
+
+  function renderForm() {
+    if (editing === null) { $('formHolder').innerHTML = ''; return; }
+    const p = profiles.find((x) => x.name === editing) ||
+      { name: '', host: '', sshPort: 0, identityFile: '', remotePort: 5000,
+        localPort: 0, extraOptions: '', hasPassword: false };
+    $('formHolder').innerHTML = `
+      <form id="profileForm">
+        <div class="row">
+          <div class="field"><label>Profile name</label>
+            <input id="f_name" value="${esc(p.name)}" placeholder="devbox" autofocus></div>
+          <div class="field"><label>Host (anything ssh accepts)</label>
+            <input id="f_host" value="${esc(p.host)}" placeholder="me@devbox.example.com"></div>
+        </div>
+        <div class="row">
+          <div class="field narrow"><label>Server port</label>
+            <input id="f_remotePort" value="${esc(p.remotePort)}" placeholder="5000"></div>
+          <div class="field narrow"><label>SSH port (opt.)</label>
+            <input id="f_sshPort" value="${p.sshPort || ''}" placeholder="22"></div>
+          <div class="field"><label>Identity file (opt.)</label>
+            <input id="f_identityFile" value="${esc(p.identityFile)}" placeholder="~/.ssh/id_ed25519"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>Password (opt. — stored encrypted in the macOS Keychain)</label>
+            <input id="f_password" type="password" autocomplete="off"
+              placeholder="${p.hasPassword ? 'saved — leave blank to keep' : 'blank = key auth (recommended)'}"></div>
+          ${p.hasPassword ? `
+          <div class="field narrow" style="align-self:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;margin:0 0 7px;cursor:pointer">
+              <input type="checkbox" id="f_clearPassword" style="width:auto"> clear saved
+            </label>
+          </div>` : ''}
+        </div>
+        <details>
+          <summary>Advanced</summary>
+          <div class="row">
+            <div class="field narrow"><label>Local port (0 = auto)</label>
+              <input id="f_localPort" value="${p.localPort || ''}" placeholder="0"></div>
+            <div class="field"><label>Extra ssh options</label>
+              <input id="f_extraOptions" value="${esc(p.extraOptions)}" placeholder="-o ProxyJump=bastion"></div>
+          </div>
+        </details>
+        <div class="form-actions">
+          <button type="submit" class="primary">${editing ? 'Save' : 'Save & Connect'}</button>
+          <button type="button" id="cancelBtn">Cancel</button>
+          <span class="form-error" id="formError"></span>
+        </div>
+      </form>`;
+    $('profileForm').addEventListener('submit', submitForm);
+    $('cancelBtn').addEventListener('click', () => { editing = null; render(); });
+    $('f_name').focus();
+  }
+
+  async function submitForm(ev) {
+    ev.preventDefault();
+    const profile = {
+      name: $('f_name').value,
+      host: $('f_host').value,
+      remotePort: $('f_remotePort').value,
+      sshPort: $('f_sshPort').value,
+      identityFile: $('f_identityFile').value.trim(),
+      localPort: $('f_localPort').value,
+      extraOptions: $('f_extraOptions').value.trim(),
+      password: $('f_password').value,
+      clearPassword: Boolean($('f_clearPassword')?.checked),
+    };
+    const wasNew = editing === '';
+    const r = await webmux.saveProfile(profile, editing || undefined);
+    if (r.error) { $('formError').textContent = r.error; return; }
+    editing = null;
+    await refresh();
+    if (wasNew) webmux.connect(profile.name.trim());
+  }
+
+  function renderStatus() {
+    $('dot').className = 'dot ' + status.state;
+    const label = {
+      idle: 'idle',
+      connecting: status.profile ? `connecting: ${status.profile}` : 'connecting…',
+      retry: status.profile ? `retrying: ${status.profile}` : 'retrying…',
+      failed: status.profile ? `failed: ${status.profile}` : 'failed',
+      connected: status.profile ? `connected: ${status.profile}` : 'connected',
+    }[status.state] || status.state;
+    $('statusText').textContent = label;
+    $('backBtn').style.display = status.state === 'connected' ? '' : 'none';
+
+    let html = '';
+    if (status.state === 'connecting' && status.msg) html += `<p>${esc(status.msg)}</p>`;
+    if (status.state === 'retry') {
+      if (status.msg) html += `<p>${esc(status.msg)}</p>`;
+      html += `<p>Connection interrupted — retrying in ${esc(status.delay ?? '?')}s… (sessions keep running on the server)</p>`;
+    }
+    if (status.state === 'failed') {
+      if (status.msg) html += `<p>${esc(status.msg)}</p>`;
+      html += `<p>Not retrying automatically — hit Connect to try again.</p>`;
+    }
+    if (['retry', 'failed', 'connecting'].includes(status.state) && status.stderr) {
+      html += `<pre>${esc(status.stderr)}</pre>`;
+    }
+    $('statusDetail').innerHTML = html;
+  }
+
+  function render() { renderList(); renderForm(); renderStatus(); }
+
+  async function refresh() {
+    const r = await webmux.listProfiles();
+    profiles = r.profiles;
+    render();
+  }
+
+  $('newBtn').addEventListener('click', () => { editing = ''; confirmDelete = null; render(); });
+  $('backBtn').addEventListener('click', () => status.profile && webmux.connect(status.profile));
+
+  $('list').addEventListener('click', async (ev) => {
+    const b = ev.target.closest('button');
+    if (!b) return;
+    if (b.dataset.connect) { webmux.connect(b.dataset.connect); }
+    else if (b.dataset.edit) { editing = b.dataset.edit; confirmDelete = null; render(); }
+    else if (b.dataset.del) {
+      if (confirmDelete === b.dataset.del) {
+        confirmDelete = null;
+        await webmux.deleteProfile(b.dataset.del);
+        await refresh();
+        return;
+      }
+      confirmDelete = b.dataset.del;
+      render();
+    }
+  });
+
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && editing !== null) { editing = null; render(); }
+  });
+
+  // Status pushes must never rebuild the form — a mid-edit re-render wipes
+  // whatever the user is typing. Only the status areas and list refresh
+  // (renderList is a no-op while a form is open).
+  webmux.onStatus((s) => { status = s; renderStatus(); renderList(); });
+  (async () => { status = await webmux.getStatus(); await refresh(); })();
+</script>
+</body>
+</html>
