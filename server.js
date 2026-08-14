@@ -1,13 +1,15 @@
 // webmux — tiled xterm.js sessions with persistent server-side state.
 //
-// Each session owns a PTY (node-pty) and a headless xterm instance
-// (@xterm/headless). All PTY output is written into the headless terminal,
-// so the full screen state (buffer, cursor, colors, modes) survives client
-// disconnects. When a client (re)attaches, the buffer is replayed via
-// @xterm/addon-serialize.
+// This process is a thin, restartable proxy: HTTP/static/auth/TLS plus
+// WebSocket termination. The ptys themselves live in a separate long-lived
+// pty host daemon (ptyhost.js) reached over a named unix socket, so
+// restarting this server never kills a shell. The host is spawned on demand
+// at startup (detached) and stops only on `node ptyhost.js shutdown` or an
+// explicit kill.
 
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -15,13 +17,9 @@ const path = require('path');
 const express = require('express');
 const yaml = require('js-yaml');
 const { WebSocketServer } = require('ws');
-const pty = require('node-pty');
-const { Terminal } = require('@xterm/headless');
-const { SerializeAddon } = require('@xterm/addon-serialize');
+const { DEFAULT_NAME, socketPath, readLines, control, ensureHost } = require('./ptyhost-client');
 
 const PORT = process.env.PORT || 5000;
-const SHELL = process.env.SHELL_CMD || process.env.SHELL || 'bash';
-const SCROLLBACK = 5000;
 
 // ---------------------------------------------------------------------------
 // Config (config.yaml, gitignored — see config.example.yaml)
@@ -47,6 +45,10 @@ if (config.auth) {
   }
   AUTH = { username: String(username), password: String(password) };
 }
+
+// Which pty host this server fronts. Different names → independent hosts
+// (own socket, own sessions), so several webmux instances can coexist.
+const HOST_NAME = process.env.WEBMUX_PTYHOST || config.ptyhost || DEFAULT_NAME;
 
 // TLS is on by default so browsers treat webmux as a secure context (async
 // clipboard API, OSC 52 writes). A self-signed cert is generated once and
@@ -114,127 +116,19 @@ function isAuthorized(req) {
 }
 
 // ---------------------------------------------------------------------------
-// Session management
+// Pty host RPC (sessions live in ptyhost.js, not here)
 // ---------------------------------------------------------------------------
 
-/** @type {Map<string, Session>} */
-const sessions = new Map();
-let nextId = 1;
-
-class Session {
-  constructor(id, cols = 80, rows = 24) {
-    this.id = id;
-    this.cols = cols;
-    this.rows = rows;
-    this.clients = new Set(); // attached WebSockets
-    this.createdAt = Date.now();
-
-    this.term = new Terminal({ cols, rows, scrollback: SCROLLBACK, allowProposedApi: true });
-    this.serialize = new SerializeAddon();
-    this.term.loadAddon(this.serialize);
-
-    // Track OSC 0/2 titles on the headless terminal so they survive
-    // disconnects (serialize doesn't capture the title); broadcast changes.
-    this.title = '';
-    this.term.onTitleChange((title) => {
-      this.title = title;
-      for (const ws of this.clients) {
-        if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: 'title', title }));
-        }
-      }
-    });
-
-    const env = {
-      ...process.env,
-      // Shimmed xclip/xsel serve the browser clipboard to CLIs like Claude
-      // Code. DISPLAY is faked so clipboard readers don't bail early on a
-      // headless host (real X clients would fail anyway).
-      PATH: `${SHIM_DIR}:${process.env.PATH}`,
-      WEBMUX_CLIPBOARD_DIR: PASTE_DIR,
-      DISPLAY: process.env.DISPLAY || ':0',
-    };
-    // The server may itself run under tmux; hide that from sessions so a
-    // nested `tmux` starts cleanly and CLIs don't adapt to a mux they can't
-    // actually see.
-    delete env.TMUX;
-    delete env.TMUX_PANE;
-    if (env.TERM_PROGRAM === 'tmux') {
-      delete env.TERM_PROGRAM;
-      delete env.TERM_PROGRAM_VERSION;
-    }
-
-    this.pty = pty.spawn(SHELL, [], {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      cwd: process.env.HOME,
-      env,
-    });
-
-    this.pty.onData((data) => {
-      this.term.write(data); // keep headless state current
-      for (const ws of this.clients) {
-        if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: 'output', data }));
-        }
-      }
-    });
-
-    this.pty.onExit(({ exitCode }) => {
-      for (const ws of this.clients) {
-        if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: 'exit', exitCode }));
-          ws.close();
-        }
-      }
-      this.dispose();
-      sessions.delete(this.id);
-    });
+// Control-plane command to the pty host. If the host is gone (crashed or
+// explicitly shut down while we were up), respawn it once and retry so the
+// web UI self-heals instead of erroring until a server restart.
+async function hostControl(msg) {
+  try {
+    return await control(HOST_NAME, msg);
+  } catch {
+    await ensureHost(HOST_NAME);
+    return control(HOST_NAME, msg);
   }
-
-  attach(ws) {
-    this.clients.add(ws);
-    // Replay accumulated state so the client renders exactly what the
-    // session looks like right now.
-    ws.send(JSON.stringify({
-      type: 'snapshot',
-      data: this.serialize.serialize({ scrollback: SCROLLBACK }),
-      cols: this.cols,
-      rows: this.rows,
-      title: this.title,
-    }));
-  }
-
-  detach(ws) {
-    this.clients.delete(ws);
-  }
-
-  input(data) {
-    this.pty.write(data);
-  }
-
-  resize(cols, rows) {
-    if (!Number.isInteger(cols) || !Number.isInteger(rows)) return;
-    cols = Math.max(2, Math.min(500, cols));
-    rows = Math.max(2, Math.min(300, rows));
-    this.cols = cols;
-    this.rows = rows;
-    this.term.resize(cols, rows);
-    this.pty.resize(cols, rows);
-  }
-
-  dispose() {
-    try { this.pty.kill(); } catch {}
-    this.term.dispose();
-  }
-}
-
-function createSession(cols, rows) {
-  const id = String(nextId++);
-  const session = new Session(id, cols, rows);
-  sessions.set(id, session);
-  return session;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,27 +149,28 @@ app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules/@xter
 app.use('/vendor/addon-fit', express.static(path.join(__dirname, 'node_modules/@xterm/addon-fit')));
 app.use('/vendor/addon-web-links', express.static(path.join(__dirname, 'node_modules/@xterm/addon-web-links')));
 
-app.get('/api/sessions', (_req, res) => {
-  res.json([...sessions.values()].map((s) => ({
-    id: s.id,
-    cols: s.cols,
-    rows: s.rows,
-    title: s.title,
-    createdAt: s.createdAt,
-    clients: s.clients.size,
-  })));
+app.get('/api/sessions', async (_req, res) => {
+  try {
+    res.json((await hostControl({ cmd: 'list' })).sessions);
+  } catch (err) {
+    res.status(502).json({ error: String(err.message || err) });
+  }
 });
 
-app.post('/api/sessions', (req, res) => {
+app.post('/api/sessions', async (req, res) => {
   const { cols, rows } = req.body || {};
-  const session = createSession(cols || 80, rows || 24);
-  res.status(201).json({ id: session.id });
+  try {
+    const r = await hostControl({ cmd: 'create', cols: cols || 80, rows: rows || 24 });
+    res.status(201).json({ id: r.id });
+  } catch (err) {
+    res.status(502).json({ error: String(err.message || err) });
+  }
 });
 
 // Pasted images land in PASTE_DIR. The latest one is also written to the
 // "clipboard" slot that the xclip/xsel shims serve, so clipboard-reading CLIs
-// (Claude Code) see it natively.
-const SHIM_DIR = path.join(__dirname, 'shims');
+// (Claude Code) see it natively. Must match the pty host's PASTE_DIR (it
+// exports WEBMUX_CLIPBOARD_DIR into sessions).
 const PASTE_DIR = path.join(os.tmpdir(), 'webmux-pastes');
 fs.mkdirSync(PASTE_DIR, { recursive: true });
 const PASTE_EXT = {
@@ -288,10 +183,12 @@ const PASTE_EXT = {
 let pasteSeq = 0;
 
 // Command line of the process in the foreground of a session's terminal
-// (tpgid of the shell's controlling tty, via /proc).
+// (tpgid of the shell's controlling tty, via /proc). The shell pid comes
+// from the pty host's snapshot frame; host and server share a machine, so
+// /proc is readable directly.
 function foregroundCmdline(session) {
   try {
-    const stat = fs.readFileSync(`/proc/${session.pty.pid}/stat`, 'utf8');
+    const stat = fs.readFileSync(`/proc/${session.pid}/stat`, 'utf8');
     const tpgid = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[5];
     return fs.readFileSync(`/proc/${tpgid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim();
   } catch {
@@ -469,12 +366,14 @@ app.get('/api/fs/raw', (req, res) => {
     .pipe(res);
 });
 
-app.delete('/api/sessions/:id', (req, res) => {
-  const session = sessions.get(req.params.id);
-  if (!session) return res.status(404).json({ error: 'not found' });
-  session.dispose(); // pty.kill triggers onExit → cleanup
-  sessions.delete(session.id);
-  res.json({ ok: true });
+app.delete('/api/sessions/:id', async (req, res) => {
+  try {
+    const r = await hostControl({ cmd: 'kill', session: req.params.id });
+    if (!r.ok) return res.status(404).json({ error: r.error || 'not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: String(err.message || err) });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -482,6 +381,11 @@ app.delete('/api/sessions/:id', (req, res) => {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  // Spawn (or adopt) the pty host before accepting clients. It runs
+  // detached, so it — and every shell in it — outlives this server.
+  const pong = await ensureHost(HOST_NAME);
+  console.log(`pty host '${HOST_NAME}' up (pid ${pong.pid}, ${pong.sessions} session(s))`);
+
   const TLS = await tlsOptions();
   const server = TLS ? https.createServer(TLS, app) : http.createServer(app);
   const wss = new WebSocketServer({
@@ -494,29 +398,42 @@ async function main() {
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://localhost');
-    const session = sessions.get(url.searchParams.get('session'));
-    if (!session) {
-      ws.send(JSON.stringify({ type: 'error', message: 'no such session' }));
-      ws.close();
-      return;
-    }
+    const id = url.searchParams.get('session');
 
-    session.attach(ws);
+    // One pty-host connection per attached browser client. The host's frames
+    // mirror the WS protocol, so host→browser lines are forwarded verbatim
+    // (snapshot/output/title/exit/error). Writes issued before the unix
+    // socket finishes connecting are queued by net internally.
+    const sock = net.connect(socketPath(HOST_NAME));
+    const send = (obj) => { if (!sock.destroyed) sock.write(JSON.stringify(obj) + '\n'); };
+    const session = { pid: 0, input: (data) => send({ type: 'input', data }) };
+
+    send({ cmd: 'attach', session: id });
+    readLines(sock, (line) => {
+      if (!session.pid) {
+        // First frame is the snapshot; remember the shell pid for
+        // foreground-process detection (paste routing).
+        try { session.pid = JSON.parse(line).pid || 0; } catch { /* not JSON — drop */ }
+      }
+      if (ws.readyState === ws.OPEN) ws.send(line);
+    });
+    sock.on('error', () => {}); // host gone → 'close' handles it
+    sock.on('close', () => ws.close());
 
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
-      if (msg.type === 'input') session.input(msg.data);
-      else if (msg.type === 'resize') session.resize(msg.cols, msg.rows);
+      if (msg.type === 'input') send({ type: 'input', data: msg.data });
+      else if (msg.type === 'resize') send({ type: 'resize', cols: msg.cols, rows: msg.rows });
       else if (msg.type === 'paste-image') handlePasteImage(session, ws, msg);
       else if (msg.type === 'clipboard-sync') writeClipboardSlot(msg); // slot only, no injection
     });
 
-    ws.on('close', () => session.detach(ws));
+    ws.on('close', () => sock.destroy());
   });
 
   server.listen(PORT, () => {
-    console.log(`webmux listening on http${TLS ? 's' : ''}://localhost:${PORT}`);
+    console.log(`webmux listening on http${TLS ? 's' : ''}://localhost:${PORT} (pty host '${HOST_NAME}')`);
   });
 }
 

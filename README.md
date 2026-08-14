@@ -6,10 +6,19 @@ buffer when no browser is attached.
 
 ## How it works
 
-- **Server** (`server.js`): each session pairs a PTY (`node-pty`) with a headless
-  terminal (`@xterm/headless`). All PTY output is mirrored into the headless
-  terminal, so the buffer, cursor, colors, and modes live on the server.
-- **Persistence**: when a client attaches (or the page reloads), the server
+- **Pty host** (`ptyhost.js`): a small long-lived daemon that owns the shells.
+  Each session pairs a PTY (`node-pty`) with a headless terminal
+  (`@xterm/headless`); all PTY output is mirrored into the headless terminal,
+  so the buffer, cursor, colors, and modes live in the daemon. It listens on a
+  named unix socket (`$XDG_RUNTIME_DIR/webmux/<name>.sock`) speaking
+  newline-delimited JSON that mirrors the WebSocket protocol.
+- **Web server** (`server.js`): a thin restartable proxy — static files, auth,
+  TLS, and WebSocket termination, forwarding frames to the pty host. It spawns
+  the host on demand at startup (detached), so restarting or killing the web
+  server never kills a shell; the browser reconnects with backoff and repaints
+  from a fresh snapshot. Nearly all code churn is in the server/frontend, so
+  in practice the host almost never needs restarting.
+- **Persistence**: when a client attaches (or the page reloads), the host
   serializes the headless buffer with `@xterm/addon-serialize` and sends it as a
   `snapshot` — the client renders exactly what the session looks like now,
   including scrollback.
@@ -40,6 +49,24 @@ Optional config lives in `config.yaml` (gitignored; copy
   pages, API, and WebSocket upgrades; without it the server is open.
 - `tls: false` serves plain http instead (Basic credentials then travel in
   the clear); `tls: {cert, key}` serves real certificates.
+- `ptyhost: <name>` picks which pty host the server fronts (default
+  `default`; env `WEBMUX_PTYHOST` overrides). Different names are fully
+  independent daemons, so several webmux instances can run side by side.
+
+### Pty host lifecycle
+
+`npm start` spawns the named pty host automatically if it isn't running
+(detached, logging to `$XDG_RUNTIME_DIR/webmux/<name>.log`). Killing or
+restarting the web server leaves the host — and every shell in it — running;
+open pages reconnect on their own. The host only stops on an explicit
+shutdown:
+
+```sh
+npm run stop                        # shut down the default host (kills its shells)
+node ptyhost.js --name X shutdown   # shut down a specific host
+node ptyhost.js --name X list       # list a host's sessions
+node ptyhost.js --name X            # run a host standalone in the foreground
+```
 
 - **+ New terminal** adds a pane by splitting the whole layout (`POST /api/sessions`).
 - **↔ / ↕** on a pane splits it side-by-side / stacked with a new session.

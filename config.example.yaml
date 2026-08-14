@@ -6,6 +6,12 @@
 #  username: admin
 #  password: change-me
 
+# Name of the pty host daemon this server fronts (default: "default").
+# Sessions live in the named host and survive web server restarts; different
+# names give fully independent hosts, so several webmux instances can run
+# side by side. Env var WEBMUX_PTYHOST overrides this.
+#ptyhost: default
+
 # TLS is ON by default: a self-signed certificate is generated once into
 # .tls/ (gitignored) and reused, so accept the browser warning once per
 # machine. Uncomment to serve plain http instead:

@@ -459,6 +459,9 @@ function makeTile(sessionId) {
     fit: null,
     ws: null,
     exited: false,
+    dead: false, // tile removed — suppresses the reconnect loop
+    online: false,
+    retryDelay: 0,
     title: '',
     label() { return this.title || sessionId; },
     setTitle(title) {
@@ -505,42 +508,11 @@ function makeTile(sessionId) {
       this.term = term;
       this.fit = fit;
 
-      const ws = new WebSocket(
-        `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?session=${sessionId}`
-      );
-      this.ws = ws;
-
-      ws.onopen = () => this.fitAndReport();
-      ws.onmessage = (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === 'snapshot') {
-          term.reset();
-          if (msg.data) term.write(msg.data);
-          this.setTitle(msg.title);
-          this.fitAndReport();
-        } else if (msg.type === 'output') {
-          term.write(msg.data);
-        } else if (msg.type === 'title') {
-          this.setTitle(msg.title);
-        } else if (msg.type === 'exit') {
-          this.exited = true;
-          term.write(`\r\n\x1b[31m[session exited: ${msg.exitCode}]\x1b[0m\r\n`);
-          setTimeout(() => removeTile(sessionId, false), 1200);
-        } else if (msg.type === 'paste-result') {
-          setStatus(msg.mode === 'claude'
-            ? 'image in clipboard — Ctrl+V forwarded to Claude'
-            : `pasted image → ${msg.path}`);
-        } else if (msg.type === 'error') {
-          removeTile(sessionId, false);
-        }
-      };
-      ws.onclose = () => {
-        if (!this.exited) term.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n');
-      };
+      this.connect();
 
       term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'input', data }));
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: 'input', data }));
         }
       });
 
@@ -584,6 +556,59 @@ function makeTile(sessionId) {
       }, true);
 
       term.focus();
+    },
+    // (Re)establish the WebSocket for this session. The server sends a full
+    // snapshot on every attach, so reconnecting after a web-server restart
+    // repaints the terminal exactly — the shells live in the pty host and
+    // keep running. Retries with backoff until the session exits or the
+    // tile is closed.
+    connect() {
+      const term = this.term;
+      const ws = new WebSocket(
+        `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?session=${sessionId}`
+      );
+      this.ws = ws;
+
+      ws.onopen = () => {
+        this.online = true;
+        this.retryDelay = 0;
+        this.fitAndReport();
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'snapshot') {
+          term.reset();
+          if (msg.data) term.write(msg.data);
+          this.setTitle(msg.title);
+          this.fitAndReport();
+        } else if (msg.type === 'output') {
+          term.write(msg.data);
+        } else if (msg.type === 'title') {
+          this.setTitle(msg.title);
+        } else if (msg.type === 'exit') {
+          this.exited = true;
+          term.write(`\r\n\x1b[31m[session exited: ${msg.exitCode}]\x1b[0m\r\n`);
+          setTimeout(() => removeTile(sessionId, false), 1200);
+        } else if (msg.type === 'paste-result') {
+          setStatus(msg.mode === 'claude'
+            ? 'image in clipboard — Ctrl+V forwarded to Claude'
+            : `pasted image → ${msg.path}`);
+        } else if (msg.type === 'error') {
+          removeTile(sessionId, false); // session no longer exists on the host
+        }
+      };
+      ws.onclose = () => {
+        if (this.dead || this.exited) return;
+        if (this.online) {
+          this.online = false;
+          term.write('\r\n\x1b[33m[disconnected — reconnecting…]\x1b[0m\r\n');
+        }
+        this.retryDelay = Math.min((this.retryDelay || 500) * 2, 10000);
+        setTimeout(() => {
+          // this.ws !== ws means something else already reconnected
+          if (!this.dead && !this.exited && this.ws === ws) this.connect();
+        }, this.retryDelay);
+      };
     },
     async pasteImage(file) {
       if (!file || this.ws?.readyState !== WebSocket.OPEN) return;
@@ -643,6 +668,7 @@ async function removeTile(sessionId, killServerSession) {
   const tile = tiles.get(sessionId);
   if (!tile) return;
   tiles.delete(sessionId);
+  tile.dead = true; // stop the reconnect loop before closing the socket
   try { tile.ws?.close(); } catch {}
   tile.term?.dispose();
   tile.root.remove();

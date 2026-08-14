@@ -5,7 +5,9 @@
   "description": "Tiled xterm.js sessions with server-side persistent state via xterm-headless",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "ptyhost": "node ptyhost.js",
+    "stop": "node ptyhost.js shutdown"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
