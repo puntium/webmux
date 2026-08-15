@@ -1,8 +1,11 @@
 # webmux
 
-A quick prototype: multiple tiled xterm.js terminal sessions in the browser, with
-**persistent server-side state** — sessions keep running and keep their full screen
-buffer when no browser is attached.
+A quick prototype: multiple tiled xterm.js terminal sessions with
+**persistent server-side state** — sessions keep running and keep their full
+screen buffer when no client is attached. The UI is a web frontend, but it is
+served over a unix socket and reached through the macOS Electron client
+(`electron/`), which tunnels the socket over SSH — there is no browser/TCP
+deployment mode.
 
 ## How it works
 
@@ -12,12 +15,15 @@ buffer when no browser is attached.
   so the buffer, cursor, colors, and modes live in the daemon. It listens on a
   named unix socket (`$XDG_RUNTIME_DIR/webmux/<name>.sock`) speaking
   newline-delimited JSON that mirrors the WebSocket protocol.
-- **Web server** (`server.js`): a thin restartable proxy — static files, auth,
-  TLS, and WebSocket termination, forwarding frames to the pty host. It spawns
-  the host on demand at startup (detached), so restarting or killing the web
-  server never kills a shell; the browser reconnects with backoff and repaints
-  from a fresh snapshot. Nearly all code churn is in the server/frontend, so
-  in practice the host almost never needs restarting.
+- **Web server** (`server.js`): a thin restartable proxy — static files and
+  WebSocket termination, forwarding frames to the pty host. It listens on a
+  unix socket of its own (`$XDG_RUNTIME_DIR/webmux/<name>.http.sock`, 0600 in
+  a 0700 dir), so filesystem permissions are the whole access story — no TCP
+  port, no TLS, no auth. It spawns the host on demand at startup (detached),
+  so restarting or killing the web server never kills a shell; the client
+  reconnects with backoff and repaints from a fresh snapshot. Nearly all code
+  churn is in the server/frontend, so in practice the host almost never needs
+  restarting.
 - **Persistence**: when a client attaches (or the page reloads), the host
   serializes the headless buffer with `@xterm/addon-serialize` and sends it as a
   `snapshot` — the client renders exactly what the session looks like now,
@@ -33,35 +39,31 @@ buffer when no browser is attached.
 
 ```sh
 npm install   # needs make + g++ for node-pty
-npm start     # https://localhost:5000 (override with PORT=...)
+npm start     # listens on $XDG_RUNTIME_DIR/webmux/default.http.sock
 ```
 
-The server speaks https by default: a self-signed certificate is generated
-on first start into `.tls/` (gitignored) and reused after that, so each
-browser accepts the warning once. This keeps webmux a secure context, which
-the async clipboard APIs (image paste sync, OSC 52 copies) require on
-non-localhost hosts.
+The server listens on a unix socket only. To use it, connect from a Mac with
+the Electron client (see below); for a quick local check,
+`curl --unix-socket $XDG_RUNTIME_DIR/webmux/default.http.sock http://localhost/api/sessions`.
 
 Optional config lives in `config.yaml` (gitignored; copy
 `config.example.yaml`):
 
-- `auth: {username, password}` enables HTTP Basic auth on everything —
-  pages, API, and WebSocket upgrades; without it the server is open.
-- `tls: false` serves plain http instead (Basic credentials then travel in
-  the clear); `tls: {cert, key}` serves real certificates.
 - `ptyhost: <name>` picks which pty host the server fronts (default
   `default`; env `WEBMUX_PTYHOST` overrides). Different names are fully
-  independent daemons, so several webmux instances can run side by side.
-- `bind: 127.0.0.1` restricts the server to loopback — for the tunnel-only
-  deployment behind the macOS Electron client (see below).
+  independent daemons — own pty socket, own http socket
+  (`<name>.http.sock`) — so several webmux instances can run side by side.
+- `socket: /path/to.sock` overrides the http socket path.
 
 ### macOS client (Electron over SSH)
 
-`electron/` holds a native macOS client that reaches the server through a
-supervised SSH port forward instead of an exposed port — no TLS, no Basic
-auth, no open firewall port; your SSH key is the front door. Sessions
-survive disconnects exactly as in the browser (they live in the pty host),
-and the client reconnects automatically on network drops and laptop wake.
+`electron/` holds the native macOS client: an Electron shell that forwards a
+local port to the server's remote unix socket over a supervised SSH tunnel
+(`ssh -L 127.0.0.1:<port>:<remote socket> host`) — no exposed port anywhere;
+your SSH key is the front door. The socket path is discovered automatically
+(the server advertises it in `~/.webmux/`), so a profile is just a name and
+an ssh host. Sessions survive disconnects (they live in the pty host), and
+the client reconnects automatically on network drops and laptop wake.
 Design and setup: `docs/electron-client.md`.
 
 ### Pty host lifecycle
@@ -129,7 +131,8 @@ Code's copy actions, `tmux set-buffer -w`) lands on the browser's system
 clipboard: the escape sequence travels through the PTY to the client
 unmodified, and the browser-side handler writes it with
 `navigator.clipboard.writeText`. The write needs the tab to be focused and a
-secure context (the default https setup, or localhost).
+secure context — satisfied in the Electron client, whose page origin is
+`http://127.0.0.1:<port>` (localhost counts).
 
 **Running tmux inside a webmux pane** needs one line of tmux config to pass
 copies through:
@@ -178,15 +181,14 @@ the process's argv looks like `claude`.
 Ctrl+V is suppressed at the xterm key-handler level (xterm would otherwise
 send a bare `^V`), but the browser default is left alone — on Windows/Linux
 the native paste event that follows carries the clipboard (no permission
-needed, works even on a `tls: false` plain-http setup): image → upload flow,
-text → xterm's normal paste. If no paste event follows (macOS, where Ctrl+V
-isn't a paste shortcut), the client falls back to
-`navigator.clipboard.read()`, which needs clipboard permission plus a secure
-context — the default https setup or localhost. Ctrl+Alt+V
+needed): image → upload flow, text → xterm's normal paste. If no paste event
+follows (macOS, where Ctrl+V isn't a paste shortcut), the client falls back
+to `navigator.clipboard.read()`, which needs clipboard permission plus a
+secure context (the `http://127.0.0.1` tunnel origin qualifies). Ctrl+Alt+V
 sends a literal `^V` (vim visual-block). The clipboard image is also
 proactively synced to the server slot on window focus where the async API is
 available (browsers have no clipboardchange event).
 
 Prototype caveats: one shared resize (last attached client wins),
-sessions die with the server process (no on-disk persistence), and the
+sessions die with the pty host process (no on-disk persistence), and the
 clipboard slot is global (one clipboard for all panes, like a real desktop).

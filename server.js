@@ -1,25 +1,27 @@
 // webmux — tiled xterm.js sessions with persistent server-side state.
 //
-// This process is a thin, restartable proxy: HTTP/static/auth/TLS plus
-// WebSocket termination. The ptys themselves live in a separate long-lived
-// pty host daemon (ptyhost.js) reached over a named unix socket, so
-// restarting this server never kills a shell. The host is spawned on demand
-// at startup (detached) and stops only on `node ptyhost.js shutdown` or an
-// explicit kill.
+// This process is a thin, restartable proxy: HTTP/static plus WebSocket
+// termination. The ptys themselves live in a separate long-lived pty host
+// daemon (ptyhost.js) reached over a named unix socket, so restarting this
+// server never kills a shell. The host is spawned on demand at startup
+// (detached) and stops only on `node ptyhost.js shutdown` or an explicit
+// kill.
+//
+// The HTTP server itself also listens on a unix socket (no TCP): filesystem
+// permissions (0600 in the 0700 runtime dir) are the whole access story, so
+// only this user can connect. The Electron client (electron/) reaches it via
+// an SSH forward — `ssh -L 127.0.0.1:<port>:<socket> host` — making sshd the
+// only remote way in. There is no browser/TCP deployment mode.
 
 const http = require('http');
-const https = require('https');
 const net = require('net');
-const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const express = require('express');
 const yaml = require('js-yaml');
 const { WebSocketServer } = require('ws');
-const { DEFAULT_NAME, socketPath, readLines, control, ensureHost } = require('./ptyhost-client');
-
-const PORT = process.env.PORT || 5000;
+const { DEFAULT_NAME, runDir, socketPath, readLines, control, ensureHost } = require('./ptyhost-client');
 
 // ---------------------------------------------------------------------------
 // Config (config.yaml, gitignored — see config.example.yaml)
@@ -30,90 +32,35 @@ let config = {};
 try {
   config = yaml.load(fs.readFileSync(CONFIG_FILE, 'utf8')) || {};
 } catch (err) {
-  if (err.code !== 'ENOENT') {
+  // No config file, or one that is all comments (js-yaml throws "input is
+  // empty" for those), means all defaults; real parse errors still abort.
+  const emptyDoc = err.name === 'YAMLException' && /input is empty/.test(err.message);
+  if (err.code !== 'ENOENT' && !emptyDoc) {
     console.error(`failed to load ${CONFIG_FILE}: ${err.message}`);
     process.exit(1);
   }
 }
 
-let AUTH = null;
-if (config.auth) {
-  const { username, password } = config.auth;
-  if (!username || !password) {
-    console.error(`${CONFIG_FILE}: auth requires both username and password`);
+// The browser/TCP deployment (TLS + Basic auth on a port) is gone; flag
+// leftover config so an old config.yaml fails loudly instead of silently
+// serving without the protection it asks for.
+for (const key of ['auth', 'tls', 'bind']) {
+  if (key in config) {
+    console.error(`${CONFIG_FILE}: '${key}' is no longer supported — the server only listens on a unix socket now (connect with the Electron client over SSH; see docs/electron-client.md)`);
     process.exit(1);
   }
-  AUTH = { username: String(username), password: String(password) };
 }
 
 // Which pty host this server fronts. Different names → independent hosts
 // (own socket, own sessions), so several webmux instances can coexist.
 const HOST_NAME = process.env.WEBMUX_PTYHOST || config.ptyhost || DEFAULT_NAME;
 
-// TLS is on by default so browsers treat webmux as a secure context (async
-// clipboard API, OSC 52 writes). A self-signed cert is generated once and
-// persisted to .tls/ (gitignored), so the exception accepted in the browser
-// survives restarts. Config: `tls: false` for plain http, or
-// `tls: {cert, key}` to serve real certificates.
-const TLS_DIR = path.join(__dirname, '.tls');
-
-async function tlsOptions() {
-  if (config.tls === false) return null;
-  if (config.tls && typeof config.tls === 'object') {
-    const { cert, key } = config.tls;
-    if (!cert || !key) {
-      console.error(`${CONFIG_FILE}: tls requires both cert and key paths`);
-      process.exit(1);
-    }
-    return { cert: fs.readFileSync(cert), key: fs.readFileSync(key) };
-  }
-  const certFile = path.join(TLS_DIR, 'cert.pem');
-  const keyFile = path.join(TLS_DIR, 'key.pem');
-  if (!fs.existsSync(certFile) || !fs.existsSync(keyFile)) {
-    const selfsigned = require('selfsigned');
-    const pems = await selfsigned.generate(
-      [{ name: 'commonName', value: os.hostname() }],
-      {
-        days: 3650,
-        keySize: 2048,
-        extensions: [{
-          name: 'subjectAltName',
-          altNames: [
-            { type: 2, value: 'localhost' },
-            { type: 2, value: os.hostname() },
-            { type: 7, ip: '127.0.0.1' },
-          ],
-        }],
-      },
-    );
-    fs.mkdirSync(TLS_DIR, { recursive: true });
-    fs.writeFileSync(keyFile, pems.private, { mode: 0o600 });
-    fs.writeFileSync(certFile, pems.cert);
-    console.log(`generated self-signed certificate in ${TLS_DIR}`);
-  }
-  return { cert: fs.readFileSync(certFile), key: fs.readFileSync(keyFile) };
-}
-
-// Hash before comparing so timingSafeEqual gets equal-length inputs and the
-// comparison leaks nothing about length or content.
-function secretsEqual(a, b) {
-  const ha = crypto.createHash('sha256').update(a).digest();
-  const hb = crypto.createHash('sha256').update(b).digest();
-  return crypto.timingSafeEqual(ha, hb);
-}
-
-function isAuthorized(req) {
-  const header = req.headers.authorization || '';
-  if (!header.startsWith('Basic ')) return false;
-  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
-  const sep = decoded.indexOf(':');
-  if (sep < 0) return false;
-  // Bitwise & so both comparisons always run (no early-out on bad username).
-  return Boolean(
-    secretsEqual(decoded.slice(0, sep), AUTH.username) &
-    secretsEqual(decoded.slice(sep + 1), AUTH.password)
-  );
-}
+// Where this HTTP server listens: next to the pty host's socket in the
+// runtime dir (0700), named after the host so instances don't collide.
+// `socket:` in config overrides the path.
+const HTTP_SOCK = config.socket
+  ? path.resolve(String(config.socket))
+  : path.join(runDir(), `${HOST_NAME}.http.sock`);
 
 // ---------------------------------------------------------------------------
 // Pty host RPC (sessions live in ptyhost.js, not here)
@@ -136,13 +83,6 @@ async function hostControl(msg) {
 // ---------------------------------------------------------------------------
 
 const app = express();
-if (AUTH) {
-  app.use((req, res, next) => {
-    if (isAuthorized(req)) return next();
-    res.set('WWW-Authenticate', 'Basic realm="webmux", charset="UTF-8"');
-    res.status(401).send('Authentication required');
-  });
-}
 app.use(express.json({ limit: '30mb' })); // pasted images arrive as base64 JSON
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules/@xterm/xterm')));
@@ -386,15 +326,11 @@ async function main() {
   const pong = await ensureHost(HOST_NAME);
   console.log(`pty host '${HOST_NAME}' up (pid ${pong.pid}, ${pong.sessions} session(s))`);
 
-  const TLS = await tlsOptions();
-  const server = TLS ? https.createServer(TLS, app) : http.createServer(app);
-  const wss = new WebSocketServer({
-    server,
-    path: '/ws',
-    // Browsers reuse cached Basic credentials on same-origin upgrade requests,
-    // so an authenticated page connects transparently.
-    verifyClient: AUTH ? ({ req }) => isAuthorized(req) : undefined,
-  });
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server, path: '/ws' });
+  // ws re-emits the http server's errors here; the server's own 'error'
+  // handler below is the one that deals with them (EADDRINUSE recovery).
+  wss.on('error', () => {});
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://localhost');
@@ -432,13 +368,40 @@ async function main() {
     ws.on('close', () => sock.destroy());
   });
 
-  // `bind: 127.0.0.1` restricts the server to loopback — the tunnel-only
-  // deployment (Electron client over SSH), where auth and TLS are off and
-  // sshd is the front door. Default: all interfaces, as before.
-  const BIND = config.bind || undefined;
-  server.listen(PORT, BIND, () => {
-    console.log(`webmux listening on http${TLS ? 's' : ''}://${BIND || 'localhost'}:${PORT} (pty host '${HOST_NAME}')`);
+  // Same stale-socket dance as the pty host: if the socket file exists,
+  // defer to a live server, or clear the leftover of a dead one and retry.
+  server.on('error', (err) => {
+    if (err.code !== 'EADDRINUSE') throw err;
+    const probe = net.connect(HTTP_SOCK);
+    probe.on('connect', () => {
+      probe.destroy();
+      console.error(`another webmux server is already listening on ${HTTP_SOCK}`);
+      process.exit(1);
+    });
+    probe.on('error', () => {
+      fs.rmSync(HTTP_SOCK, { force: true });
+      server.listen(HTTP_SOCK);
+    });
   });
+
+  server.listen(HTTP_SOCK, () => {
+    fs.chmodSync(HTTP_SOCK, 0o600); // dir is 0700 already; belt and braces
+    // Advertise the socket path at a fixed home-relative location so the
+    // Electron client can auto-discover it (`ssh host cat
+    // .webmux/<name>.http.sock.path` — sshd runs remote commands with the
+    // home dir as cwd) instead of knowing the uid behind $XDG_RUNTIME_DIR.
+    const advertDir = path.join(HOME, '.webmux');
+    fs.mkdirSync(advertDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(advertDir, `${HOST_NAME}.http.sock.path`), HTTP_SOCK + '\n', { mode: 0o600 });
+    console.log(`webmux listening on ${HTTP_SOCK} (pty host '${HOST_NAME}')`);
+  });
+
+  const cleanup = () => {
+    try { fs.rmSync(HTTP_SOCK, { force: true }); } catch { /* best effort */ }
+    process.exit(0);
+  };
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
 }
 
 main().catch((err) => {

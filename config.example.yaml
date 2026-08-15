@@ -1,10 +1,9 @@
 # Copy to config.yaml (gitignored) to configure webmux.
-
-# Uncomment to require HTTP Basic auth for all pages, API calls, and
-# WebSocket connections. Omit the section entirely to disable auth.
-#auth:
-#  username: admin
-#  password: change-me
+#
+# The server listens on a unix socket only — no TCP, no TLS, no auth. The
+# socket is 0600 inside the 0700 runtime dir, so filesystem permissions are
+# the access control; connect from another machine with the Electron client,
+# which forwards the socket over SSH (docs/electron-client.md).
 
 # Name of the pty host daemon this server fronts (default: "default").
 # Sessions live in the named host and survive web server restarts; different
@@ -12,17 +11,8 @@
 # side by side. Env var WEBMUX_PTYHOST overrides this.
 #ptyhost: default
 
-# Bind address (default: all interfaces). Set to 127.0.0.1 for the
-# tunnel-only deployment: the Electron client (see docs/electron-client.md)
-# reaches the server through an SSH port forward, so with auth omitted and
-# tls off, loopback-only binding makes sshd the only way in.
-#bind: 127.0.0.1
-
-# TLS is ON by default: a self-signed certificate is generated once into
-# .tls/ (gitignored) and reused, so accept the browser warning once per
-# machine. Uncomment to serve plain http instead:
-#tls: false
-# ...or to serve real certificates:
-#tls:
-#  cert: /path/to/fullchain.pem
-#  key: /path/to/privkey.pem
+# Where the HTTP server listens (default:
+# $XDG_RUNTIME_DIR/webmux/<ptyhost>.http.sock). The path is advertised in
+# ~/.webmux/<ptyhost>.http.sock.path for the client's auto-discovery, so
+# overriding it needs no client-side change.
+#socket: /run/user/1000/webmux/default.http.sock

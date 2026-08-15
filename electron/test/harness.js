@@ -70,7 +70,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let r = await handlers['profiles:list']();
   assert.strictEqual(r.profiles.length, 1, 'migrated one profile');
   assert.strictEqual(r.profiles[0].name, 'me@oldbox');
-  assert.strictEqual(r.profiles[0].remotePort, 5001);
+  // pre-unix-socket remotePort is dropped; blank remoteSocket = auto-discover
+  assert.ok(!('remotePort' in r.profiles[0]), 'legacy remotePort dropped');
+  assert.strictEqual(r.profiles[0].remoteSocket, '', 'defaults to auto-discovery');
   assert.strictEqual(r.profiles[0].extraOptions, '-o ProxyJump=bastion');
   assert.strictEqual(r.lastProfile, 'me@oldbox');
   console.log('migration ok');
@@ -83,28 +85,33 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // -- save / validation ------------------------------------------------
   r = await handlers['profiles:save'](null, { name: '', host: 'x' });
   assert.ok(r.error, 'rejects empty name');
-  r = await handlers['profiles:save'](null, { name: 'dev', host: 'me@devbox', remotePort: '5000', sshPort: '2222' });
+  r = await handlers['profiles:save'](null, { name: 'dev', host: 'me@devbox', remoteSocket: '  /run/user/1234/webmux/default.http.sock ', sshPort: '2222' });
   assert.ok(r.ok);
   r = await handlers['profiles:save'](null, { name: 'me@oldbox', host: 'y' });
   assert.ok(r.error, 'rejects duplicate name');
+  r = await handlers['profiles:save'](null, { name: 'inj', host: 'x', remoteSocket: 'name; rm -rf /' });
+  assert.ok(r.error, 'rejects shell metacharacters in instance name');
   assert.strictEqual(readStore().profiles.length, 2);
   assert.strictEqual(readStore().profiles[1].sshPort, 2222, 'coerces ports to numbers');
+  assert.strictEqual(readStore().profiles[1].remoteSocket, '/run/user/1234/webmux/default.http.sock', 'trims socket path');
   console.log('save/validation ok');
 
   // -- rename -----------------------------------------------------------
-  r = await handlers['profiles:save'](null, { name: 'devbox', host: 'me@devbox', remotePort: 5000 }, 'dev');
+  r = await handlers['profiles:save'](null, { name: 'devbox', host: 'me@devbox' }, 'dev');
   assert.ok(r.ok);
   assert.ok(readStore().profiles.some((p) => p.name === 'devbox'), 'renamed');
   assert.ok(!readStore().profiles.some((p) => p.name === 'dev'), 'old name gone');
+  assert.strictEqual(readStore().profiles.find((p) => p.name === 'devbox').remoteSocket,
+    '', 'blank socket stays blank (auto-discovery)');
 
   // rename the active (auto-connected) profile: lastProfile must follow
-  r = await handlers['profiles:save'](null, { name: 'oldbox', host: 'me@oldbox', remotePort: 5001 }, 'me@oldbox');
+  r = await handlers['profiles:save'](null, { name: 'oldbox', host: 'me@oldbox' }, 'me@oldbox');
   assert.ok(r.ok);
   assert.strictEqual(readStore().lastProfile, 'oldbox', 'lastProfile follows rename');
   console.log('rename ok');
 
   // -- passwords --------------------------------------------------------
-  r = await handlers['profiles:save'](null, { name: 'pw', host: 'me@pwbox', remotePort: 5000, password: 's3cret' });
+  r = await handlers['profiles:save'](null, { name: 'pw', host: 'me@pwbox', password: 's3cret' });
   assert.ok(r.ok);
   let stored = readStore().profiles.find((p) => p.name === 'pw');
   assert.strictEqual(Buffer.from(stored.passwordEnc, 'base64').toString(), 'ENC:s3cret', 'stored encrypted');
@@ -114,19 +121,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.ok(!('passwordEnc' in listed), 'ciphertext never crosses the bridge');
 
   // blank password on edit keeps the stored one
-  r = await handlers['profiles:save'](null, { name: 'pw', host: 'me@pwbox', remotePort: 5000, password: '' }, 'pw');
+  r = await handlers['profiles:save'](null, { name: 'pw', host: 'me@pwbox', password: '' }, 'pw');
   assert.ok(r.ok);
   stored = readStore().profiles.find((p) => p.name === 'pw');
   assert.strictEqual(Buffer.from(stored.passwordEnc, 'base64').toString(), 'ENC:s3cret', 'blank keeps password');
 
   // rename keeps it too
-  r = await handlers['profiles:save'](null, { name: 'pw2', host: 'me@pwbox', remotePort: 5000 }, 'pw');
+  r = await handlers['profiles:save'](null, { name: 'pw2', host: 'me@pwbox' }, 'pw');
   assert.ok(r.ok);
   stored = readStore().profiles.find((p) => p.name === 'pw2');
   assert.ok(stored.passwordEnc, 'rename keeps password');
 
   // clear flag removes it
-  r = await handlers['profiles:save'](null, { name: 'pw2', host: 'me@pwbox', remotePort: 5000, clearPassword: true }, 'pw2');
+  r = await handlers['profiles:save'](null, { name: 'pw2', host: 'me@pwbox', clearPassword: true }, 'pw2');
   assert.ok(r.ok);
   stored = readStore().profiles.find((p) => p.name === 'pw2');
   assert.strictEqual(stored.passwordEnc, '', 'clear removes password');
@@ -136,7 +143,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // -- failed first connect parks (no auto-retry) -----------------------
   // (with a password, so the decrypt + askpass-env spawn path runs too)
-  r = await handlers['profiles:save'](null, { name: 'bad', host: 'nobody@webmux-test.invalid', remotePort: 5000, password: 'pw' });
+  r = await handlers['profiles:save'](null, { name: 'bad', host: 'nobody@webmux-test.invalid', password: 'pw' });
   assert.ok(r.ok);
   r = await handlers['profiles:connect'](null, 'bad');
   assert.ok(r.ok);

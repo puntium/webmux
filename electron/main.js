@@ -1,13 +1,13 @@
 // webmux macOS client — an Electron shell around the existing web frontend,
 // reaching the remote server through a supervised SSH tunnel.
 //
-// The whole app rides one port forward: the page, /api/*, and /ws all go to
-// http://127.0.0.1:<localPort>, which ssh forwards to the server's loopback
-// port on the remote box (config.yaml there: `tls: false`, `bind:
-// 127.0.0.1`, no auth — sshd is the front door). The local port is chosen
-// once per profile and reused across tunnel respawns, so the loaded page's
-// own WebSocket-retry logic heals blips without a reload; sessions repaint
-// from pty-host snapshots.
+// The whole app rides one forward: the page, /api/*, and /ws all go to
+// http://127.0.0.1:<localPort>, which ssh forwards to the server's unix
+// socket on the remote box ($XDG_RUNTIME_DIR/webmux/<name>.http.sock —
+// filesystem perms there are the access control, sshd is the front door).
+// The local port is chosen once per profile and reused across tunnel
+// respawns, so the loaded page's own WebSocket-retry logic heals blips
+// without a reload; sessions repaint from pty-host snapshots.
 //
 // Connection profiles are managed in connect.html (renderer, talking over
 // the preload bridge) and stored in <userData>/config.json. The last-used
@@ -29,7 +29,13 @@ const PROFILE_DEFAULTS = {
   host: '', // anything ssh accepts, ~/.ssh/config aliases included
   sshPort: 0, // 0 = ssh default (22 / per ssh_config)
   identityFile: '', // optional -i path
-  remotePort: 5000, // where server.js listens on the remote loopback
+  // Where server.js listens on the remote box. Blank (the default) means
+  // auto-discover: the server advertises its socket path in
+  // ~/.webmux/<name>.http.sock.path, which the client reads over ssh before
+  // opening the tunnel. A bare name discovers that named instance; an
+  // absolute path skips discovery (sshd expands no ~/$VARs, so it must be
+  // absolute).
+  remoteSocket: '',
   localPort: 0, // 0 = pick a free port per app run
   extraOptions: '', // extra ssh args, whitespace-separated
   passwordEnc: '', // safeStorage ciphertext, base64; never leaves main
@@ -48,7 +54,9 @@ function loadStore() {
   }
   if (raw && Array.isArray(raw.profiles)) {
     store = {
-      profiles: raw.profiles.map((p) => ({ ...PROFILE_DEFAULTS, ...p })),
+      // Drop the pre-unix-socket remotePort field; such profiles fall back
+      // to the default remoteSocket and need a one-time edit if it differs.
+      profiles: raw.profiles.map(({ remotePort, ...p }) => ({ ...PROFILE_DEFAULTS, ...p })),
       lastProfile: raw.lastProfile || null,
     };
   } else if (raw && raw.host) {
@@ -58,7 +66,6 @@ function loadStore() {
         ...PROFILE_DEFAULTS,
         name: raw.host,
         host: raw.host,
-        remotePort: raw.remotePort || PROFILE_DEFAULTS.remotePort,
         localPort: raw.localPort || 0,
         extraOptions: Array.isArray(raw.sshOptions) ? raw.sshOptions.join(' ') : '',
       }],
@@ -88,9 +95,10 @@ function ensureAskpass() {
   fs.writeFileSync(askpassFile(), '#!/bin/sh\nprintf \'%s\' "$WEBMUX_SSH_PASSWORD"\n', { mode: 0o700 });
 }
 
-function sshArgs(p, localPort) {
+// Options shared by the tunnel and the discovery run: auth, endpoint, and
+// timeouts, but no forwarding.
+function sshBaseArgs(p) {
   return [
-    '-N',
     // Key-only auth unless a password is saved: BatchMode forbids prompts,
     // which would otherwise hang a headless spawn. With a saved password the
     // askpass helper answers the one permitted prompt — one, so a wrong
@@ -98,14 +106,21 @@ function sshArgs(p, localPort) {
     ...(p.passwordEnc
       ? ['-o', 'NumberOfPasswordPrompts=1']
       : ['-o', 'BatchMode=yes']),
-    '-o', 'ExitOnForwardFailure=yes',
     '-o', 'ServerAliveInterval=15',
     '-o', 'ServerAliveCountMax=2',
     '-o', 'ConnectTimeout=10',
-    '-L', `127.0.0.1:${localPort}:127.0.0.1:${p.remotePort}`,
     ...(p.sshPort ? ['-p', String(p.sshPort)] : []),
     ...(p.identityFile ? ['-i', p.identityFile] : []),
     ...String(p.extraOptions || '').split(/\s+/).filter(Boolean),
+  ];
+}
+
+function sshTunnelArgs(p, localPort, remoteSock) {
+  return [
+    '-N',
+    '-o', 'ExitOnForwardFailure=yes',
+    ...sshBaseArgs(p),
+    '-L', `127.0.0.1:${localPort}:${remoteSock}`,
     p.host,
   ];
 }
@@ -129,7 +144,8 @@ let win = null;
 let active = null; // profile currently connected/connecting, or null
 let localPort = 0;
 const portByProfile = new Map(); // ephemeral picks, stable within this app run
-let tunnel = null; // ssh child process, or null
+let tunnel = null; // ssh tunnel child process, or null
+let discovery = null; // ssh socket-discovery child process, or null
 let hadConnection = false; // this connect-cycle reached 'connected' at least once
 let retryDelay = 0; // ms; 0 → immediate
 let retryTimer = null;
@@ -160,6 +176,7 @@ function stopTunnel() {
   generation++; // orphan any pending retry/poll/exit handling
   clearTimeout(retryTimer);
   retryTimer = null;
+  if (discovery) { discovery.kill(); discovery = null; }
   if (tunnel) { tunnel.kill(); tunnel = null; }
 }
 
@@ -178,7 +195,7 @@ async function connectProfile(profile) {
 }
 
 function startTunnel() {
-  if (quitting || tunnel) return;
+  if (quitting || tunnel || discovery) return;
   clearTimeout(retryTimer);
   retryTimer = null;
   if (!active) { showConnectPage(); return; }
@@ -208,7 +225,50 @@ function startTunnel() {
 
   setStatus({ state: 'connecting', msg: `ssh ${active.host}` });
 
-  const child = spawn('ssh', sshArgs(active, localPort), { stdio: ['ignore', 'ignore', 'pipe'], env });
+  const rs = String(active.remoteSocket || '');
+  if (rs.startsWith('/')) spawnTunnel(gen, env, rs); // explicit path — no discovery
+  else discoverSocket(gen, env, rs || 'default');
+}
+
+// Read the server's advertised socket path over ssh before opening the
+// tunnel: `cat .webmux/<name>.http.sock.path`, relying on sshd giving remote
+// commands the home dir as cwd. Runs on every (re)connect attempt, so a
+// server restarted onto a different path just works.
+function discoverSocket(gen, env, name) {
+  const child = spawn(
+    'ssh',
+    [...sshBaseArgs(active), active.host, `cat .webmux/${name}.http.sock.path`],
+    { stdio: ['ignore', 'pipe', 'pipe'], env },
+  );
+  discovery = child;
+  let out = '';
+
+  child.stdout.on('data', (chunk) => { out += chunk; });
+  child.stderr.on('data', (chunk) => {
+    stderrTail = stderrTail.concat(String(chunk).split('\n')).filter(Boolean).slice(-8);
+  });
+
+  child.on('error', (err) => {
+    // spawn failure (no ssh binary) — 'exit' won't always follow
+    stderrTail.push(String(err.message || err));
+    if (discovery === child) { discovery = null; onTunnelDown(gen); }
+  });
+
+  child.on('exit', (code, signal) => {
+    if (discovery === child) discovery = null;
+    if (quitting || gen !== generation) return;
+    // Take the last absolute-path line so shell-profile noise on stdout
+    // can't break discovery.
+    const sockPath = out.split('\n').map((s) => s.trim()).filter((s) => s.startsWith('/')).pop();
+    if (code === 0 && sockPath) return spawnTunnel(gen, env, sockPath);
+    stderrTail.push(`could not read .webmux/${name}.http.sock.path — is webmux running on the host?`);
+    onTunnelDown(gen, code ?? signal);
+  });
+}
+
+function spawnTunnel(gen, env, remoteSock) {
+  if (quitting || gen !== generation) return;
+  const child = spawn('ssh', sshTunnelArgs(active, localPort, remoteSock), { stdio: ['ignore', 'ignore', 'pipe'], env });
   tunnel = child;
 
   child.stderr.on('data', (chunk) => {
@@ -296,7 +356,12 @@ function registerIpc() {
     const p = { ...PROFILE_DEFAULTS, ...fields };
     p.name = String(p.name || '').trim();
     p.host = String(p.host || '').trim();
-    p.remotePort = Number(p.remotePort) || PROFILE_DEFAULTS.remotePort;
+    p.remoteSocket = String(p.remoteSocket || '').trim();
+    // A bare instance name is interpolated into the remote discovery
+    // command, so it must stay shell-inert.
+    if (p.remoteSocket && !p.remoteSocket.startsWith('/') && !/^[A-Za-z0-9._-]+$/.test(p.remoteSocket)) {
+      return { error: 'server socket must be blank (auto), an absolute path, or an instance name (letters, digits, . _ -)' };
+    }
     p.sshPort = Number(p.sshPort) || 0;
     p.localPort = Number(p.localPort) || 0;
     if (!p.name || !p.host) return { error: 'name and host are required' };

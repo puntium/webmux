@@ -108,9 +108,10 @@
   <p class="hint">
     Key auth needs no prompt (use ssh-agent for passphrases); or save a
     password per profile — it is stored encrypted via the macOS Keychain and
-    fed to ssh through an askpass helper. On the server:
-    <code>tls: false</code>, <code>bind: 127.0.0.1</code>, no
-    <code>auth</code> section. ⌘⇧R reconnects; ⌘⇧O reopens this page.
+    fed to ssh through an askpass helper. The server's unix socket is found
+    automatically (it advertises its path in
+    <code>~/.webmux/</code> on the host). ⌘⇧R reconnects; ⌘⇧O reopens this
+    page.
   </p>
 </div>
 
@@ -127,7 +128,7 @@
   function profileDetail(p) {
     const bits = [p.host];
     if (p.sshPort) bits.push(`-p ${p.sshPort}`);
-    bits.push(`→ :${p.remotePort}`);
+    bits.push(`→ ${p.remoteSocket || 'auto'}`);
     return bits.join(' ');
   }
 
@@ -152,7 +153,7 @@
   function renderForm() {
     if (editing === null) { $('formHolder').innerHTML = ''; return; }
     const p = profiles.find((x) => x.name === editing) ||
-      { name: '', host: '', sshPort: 0, identityFile: '', remotePort: 5000,
+      { name: '', host: '', sshPort: 0, identityFile: '', remoteSocket: '',
         localPort: 0, extraOptions: '', hasPassword: false };
     $('formHolder').innerHTML = `
       <form id="profileForm">
@@ -163,8 +164,6 @@
             <input id="f_host" value="${esc(p.host)}" placeholder="me@devbox.example.com"></div>
         </div>
         <div class="row">
-          <div class="field narrow"><label>Server port</label>
-            <input id="f_remotePort" value="${esc(p.remotePort)}" placeholder="5000"></div>
           <div class="field narrow"><label>SSH port (opt.)</label>
             <input id="f_sshPort" value="${p.sshPort || ''}" placeholder="22"></div>
           <div class="field"><label>Identity file (opt.)</label>
@@ -183,6 +182,10 @@
         </div>
         <details>
           <summary>Advanced</summary>
+          <div class="row">
+            <div class="field"><label>Server socket (blank = auto-discover)</label>
+              <input id="f_remoteSocket" value="${esc(p.remoteSocket)}" placeholder="auto — or instance name, or /abs/path.sock"></div>
+          </div>
           <div class="row">
             <div class="field narrow"><label>Local port (0 = auto)</label>
               <input id="f_localPort" value="${p.localPort || ''}" placeholder="0"></div>
@@ -206,7 +209,7 @@
     const profile = {
       name: $('f_name').value,
       host: $('f_host').value,
-      remotePort: $('f_remotePort').value,
+      remoteSocket: $('f_remoteSocket').value.trim(),
       sshPort: $('f_sshPort').value,
       identityFile: $('f_identityFile').value.trim(),
       localPort: $('f_localPort').value,

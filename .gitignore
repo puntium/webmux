@@ -2,6 +2,3 @@ node_modules/
 
 # local config (copy config.example.yaml)
 config.yaml
-
-# auto-generated self-signed certificate
-.tls/
