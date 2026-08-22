@@ -291,6 +291,7 @@ export function makeFilesTile(id) {
 
   let gen = 0; // render generation, guards async results from stale renders
   let rightmostDir = null; // deepest directory column shown — the paste target
+  let previewName = null; // file under the cursor (preview showing) — names the tab
   async function rerender() {
     const g = ++gen;
     const chain = fsChain(state.dir);
@@ -300,6 +301,7 @@ export function makeFilesTile(id) {
     const entries = lists[chain.length - 1].entries || [];
     const cursorEntry = entries.find((e) => e.name === state.cursor) || null;
     if (!cursorEntry) state.cursor = null;
+    previewName = cursorEntry && cursorEntry.type !== 'dir' ? cursorEntry.name : null;
     rightmostDir = cursorEntry?.type === 'dir'
       ? fsJoin(state.dir, cursorEntry.name)
       : state.dir;
@@ -376,7 +378,7 @@ export function makeFilesTile(id) {
     ws: null,
     labelEl: null,
     opened: false,
-    label: () => fsBase(state.dir),
+    label: () => previewName || fsBase(state.dir),
     focus() { colsEl.focus(); },
     fitAndReport() {}, // no terminal geometry to report
     openIfNeeded() {

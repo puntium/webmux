@@ -213,6 +213,16 @@ function buildPane(node) {
   return el;
 }
 
+// Subtle monochrome tab-type markers (stroke follows the tab's text color).
+const TAB_ICON_SVG = {
+  term: `<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"
+    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+    ><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+  files: `<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"
+    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+    ><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
+};
+
 function buildTab(node, id) {
   const tab = document.createElement('div');
   tab.className = 'tab' + (id === node.active ? ' active' : '');
@@ -220,6 +230,9 @@ function buildTab(node, id) {
   tab.title = isFilesId(id) ? 'file browser' : `session ${id}`;
 
   const tile = tiles.get(id);
+  const icon = document.createElement('span');
+  icon.className = 'tab-icon';
+  icon.innerHTML = TAB_ICON_SVG[isFilesId(id) ? 'files' : 'term'];
   const label = document.createElement('span');
   label.className = 'tab-label';
   label.textContent = tile?.label ? tile.label() : id;
@@ -228,7 +241,7 @@ function buildTab(node, id) {
   close.className = 'tab-close';
   close.title = isFilesId(id) ? 'Close' : 'Kill session';
   close.textContent = '✕';
-  tab.append(label, close);
+  tab.append(icon, label, close);
 
   tab.addEventListener('click', () => {
     if (node.active !== id) {
@@ -466,6 +479,8 @@ function makeTile(sessionId) {
     exited: false,
     dead: false, // tile removed — suppresses the reconnect loop
     online: false,
+    sticky: true, // follow new output (manual stick — see the onScroll hook)
+    prevScrollY: 0,
     retryDelay: 0,
     title: '',
     label() { return this.title || sessionId; },
@@ -512,6 +527,31 @@ function makeTile(sessionId) {
       term.open(root.querySelector('.term-holder'));
       this.term = term;
       this.fit = fit;
+
+      // Manual scroll stickiness: xterm follows new output only when the
+      // viewport sits *exactly* on the last line, so a scroll that lands a
+      // hair short leaves the terminal silently unstuck. Instead, keep a
+      // sticky flag: a downward scroll landing within a few lines of the
+      // bottom turns it on (and snaps the rest of the way); scrolling up
+      // turns it off, so scrolling back to read never gets yanked down.
+      // The band is screen-relative, not scrollback-relative — a % of the
+      // whole buffer would span hundreds of lines, and wheel momentum
+      // jitter (a stray downward tick at the end of an upward flick) would
+      // re-stick from way up. Output writes re-assert the stick (see the
+      // 'output' handler).
+      term.onScroll((y) => {
+        const bottom = term.buffer.active.baseY;
+        const nearBottom = bottom - y <= Math.max(3, Math.round(term.rows * 0.15));
+        if (y < this.prevScrollY) this.sticky = false;
+        else if (y > this.prevScrollY && nearBottom) this.sticky = true;
+        this.prevScrollY = y;
+        if (this.sticky && y < bottom) term.scrollToBottom();
+      });
+      // Wheel-up is unambiguous user intent to leave the bottom — unstick
+      // on the gesture itself, not on the scroll events it produces.
+      root.querySelector('.term-holder').addEventListener('wheel', (ev) => {
+        if (ev.deltaY < 0) this.sticky = false;
+      }, { passive: true, capture: true });
 
       this.connect();
 
@@ -587,7 +627,8 @@ function makeTile(sessionId) {
           this.setTitle(msg.title);
           this.fitAndReport();
         } else if (msg.type === 'output') {
-          term.write(msg.data);
+          // The callback runs after the chunk is parsed, when baseY is final.
+          term.write(msg.data, () => { if (this.sticky) term.scrollToBottom(); });
         } else if (msg.type === 'title') {
           this.setTitle(msg.title);
         } else if (msg.type === 'exit') {
