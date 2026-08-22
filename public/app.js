@@ -4,8 +4,9 @@
    tabbed set of sessions with one active tab. Tabs can be dragged between
    panes (and reordered within one), but dropping never creates a new split —
    splits happen only via the explicit ↔ / ↕ buttons. Sessions live on the
-   server; the tree is saved to localStorage so a reload restores both the
-   sessions (from headless snapshots) and the arrangement.
+   server; the tree is saved to localStorage — per origin, so per host and
+   per client — and a reload restores both the sessions (from headless
+   snapshots) and the arrangement.
 
    Tabs hold either a terminal session (id from the server) or a client-side
    widget (id `files-<random>`, the Miller-columns file browser implemented
@@ -90,6 +91,10 @@ function removeSessionFromTree(sessionId) {
   tree = pruneEmpty(tree);
 }
 
+// The layout stays in localStorage, i.e. per client *and* per host: storage
+// is keyed by origin, and in the Electron client each profile gets a stable
+// local forward port (persisted as the profile's savedPort), so different
+// clients keep the layouts that fit their own screens.
 function saveLayout() {
   localStorage.setItem('webmux-layout', JSON.stringify(tree));
 }

@@ -20,13 +20,7 @@
   .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
   .topbar .spacer { flex: 1; }
 
-  .pill {
-    display: inline-flex; align-items: center; gap: 7px;
-    font-size: 12px; color: #999;
-    background: #262626; border: 1px solid #333; border-radius: 999px;
-    padding: 3px 12px;
-  }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
   .dot.connecting { background: #d9a334; animation: pulse 1.2s ease-in-out infinite; }
   .dot.retry { background: #c75450; }
   .dot.failed { background: #c75450; }
@@ -51,7 +45,8 @@
   }
   .card.active { border-color: #3a6ea5; }
   .card .info { flex: 1; min-width: 0; }
-  .card .name { color: #eee; font-weight: 600; }
+  .card .name { color: #eee; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .card .name .state-label { font-size: 11px; font-weight: 400; color: #888; }
   .card .detail {
     font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
     color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -80,6 +75,7 @@
   summary { font-size: 12px; color: #777; cursor: pointer; margin-bottom: 8px; }
 
   .status-detail { margin-top: 18px; }
+  .status-detail h2 { font-size: 13px; color: #bbb; margin: 14px 0 2px; font-weight: 600; }
   .status-detail p { margin: 4px 0; color: #999; font-size: 13px; }
   pre {
     font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -94,9 +90,7 @@
 <div class="wrap">
   <div class="topbar">
     <h1>webmux</h1>
-    <span class="pill"><span class="dot" id="dot"></span><span id="statusText">idle</span></span>
     <span class="spacer"></span>
-    <button id="backBtn" style="display:none">Back to terminal</button>
     <button class="primary" id="newBtn">New Profile</button>
   </div>
 
@@ -106,12 +100,13 @@
   <div class="status-detail" id="statusDetail"></div>
 
   <p class="hint">
-    Key auth needs no prompt (use ssh-agent for passphrases); or save a
-    password per profile — it is stored encrypted via the macOS Keychain and
-    fed to ssh through an askpass helper. The server's unix socket is found
-    automatically (it advertises its path in
-    <code>~/.webmux/</code> on the host). ⌘⇧R reconnects; ⌘⇧O reopens this
-    page.
+    Connect to several hosts at once — each connection gets a pill in the
+    header bar above (⌘1…⌘9 switch, ⌘⇧O returns here). Key auth needs no
+    prompt (use ssh-agent for passphrases); or save a password per profile —
+    it is stored encrypted via the macOS Keychain and fed to ssh through an
+    askpass helper. The server's unix socket is found automatically (it
+    advertises its path in <code>~/.webmux/</code> on the host).
+    ⌘⇧R reconnects the current host.
   </p>
 </div>
 
@@ -121,9 +116,11 @@
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   let profiles = [];
-  let status = { state: 'idle' };
+  let snap = { active: null, connections: [] }; // pushed from main
   let editing = null; // original name of profile being edited, '' for new
   let confirmDelete = null;
+
+  const connOf = (name) => snap.connections.find((c) => c.name === name);
 
   function profileDetail(p) {
     const bits = [p.host];
@@ -132,22 +129,49 @@
     return bits.join(' ');
   }
 
+  const STATE_LABEL = {
+    connecting: 'connecting…',
+    connected: 'connected',
+    retry: 'retrying…',
+    failed: 'failed',
+  };
+
+  function cardButtons(p, conn) {
+    const b = [];
+    b.push(`<button class="small danger" data-del="${esc(p.name)}">${confirmDelete === p.name ? 'Sure?' : 'Delete'}</button>`);
+    b.push(`<button class="small" data-edit="${esc(p.name)}">Edit</button>`);
+    if (conn && conn.state === 'connected') {
+      b.push(`<button class="small" data-disconnect="${esc(p.name)}">Disconnect</button>`);
+      b.push(`<button class="small primary" data-connect="${esc(p.name)}">Show</button>`);
+    } else if (conn && (conn.state === 'connecting' || conn.state === 'retry')) {
+      b.push(`<button class="small" data-disconnect="${esc(p.name)}">Cancel</button>`);
+    } else {
+      b.push(`<button class="small primary" data-connect="${esc(p.name)}">Connect</button>`);
+    }
+    return b.join('');
+  }
+
   function renderList() {
     if (editing !== null) { $('list').innerHTML = ''; return; }
     if (!profiles.length) {
       $('list').innerHTML = '<div class="empty">No profiles yet — create one to connect.</div>';
       return;
     }
-    $('list').innerHTML = profiles.map((p) => `
-      <div class="card${p.name === status.profile && status.state !== 'idle' ? ' active' : ''}">
+    $('list').innerHTML = profiles.map((p) => {
+      const conn = connOf(p.name);
+      return `
+      <div class="card${conn && conn.state === 'connected' ? ' active' : ''}">
         <div class="info">
-          <div class="name">${esc(p.name)}</div>
+          <div class="name">
+            ${conn ? `<span class="dot ${esc(conn.state)}"></span>` : ''}
+            ${esc(p.name)}
+            ${conn ? `<span class="state-label">${esc(STATE_LABEL[conn.state] || conn.state)}</span>` : ''}
+          </div>
           <div class="detail">${esc(profileDetail(p))}</div>
         </div>
-        <button class="small danger" data-del="${esc(p.name)}">${confirmDelete === p.name ? 'Sure?' : 'Delete'}</button>
-        <button class="small" data-edit="${esc(p.name)}">Edit</button>
-        <button class="small primary" data-connect="${esc(p.name)}">Connect</button>
-      </div>`).join('');
+        ${cardButtons(p, conn)}
+      </div>`;
+    }).join('');
   }
 
   function renderForm() {
@@ -225,30 +249,22 @@
     if (wasNew) webmux.connect(profile.name.trim());
   }
 
+  // One detail block per connection that has something to say (connecting
+  // progress, retry countdowns, failure diagnostics). Healthy connections
+  // are just a green dot on their card and a pill in the header.
   function renderStatus() {
-    $('dot').className = 'dot ' + status.state;
-    const label = {
-      idle: 'idle',
-      connecting: status.profile ? `connecting: ${status.profile}` : 'connecting…',
-      retry: status.profile ? `retrying: ${status.profile}` : 'retrying…',
-      failed: status.profile ? `failed: ${status.profile}` : 'failed',
-      connected: status.profile ? `connected: ${status.profile}` : 'connected',
-    }[status.state] || status.state;
-    $('statusText').textContent = label;
-    $('backBtn').style.display = status.state === 'connected' ? '' : 'none';
-
     let html = '';
-    if (status.state === 'connecting' && status.msg) html += `<p>${esc(status.msg)}</p>`;
-    if (status.state === 'retry') {
-      if (status.msg) html += `<p>${esc(status.msg)}</p>`;
-      html += `<p>Connection interrupted — retrying in ${esc(status.delay ?? '?')}s… (sessions keep running on the server)</p>`;
-    }
-    if (status.state === 'failed') {
-      if (status.msg) html += `<p>${esc(status.msg)}</p>`;
-      html += `<p>Not retrying automatically — hit Connect to try again.</p>`;
-    }
-    if (['retry', 'failed', 'connecting'].includes(status.state) && status.stderr) {
-      html += `<pre>${esc(status.stderr)}</pre>`;
+    for (const c of snap.connections) {
+      if (!['connecting', 'retry', 'failed'].includes(c.state)) continue;
+      html += `<h2><span class="dot ${esc(c.state)}" style="display:inline-block;margin-right:6px"></span>${esc(c.name)}</h2>`;
+      if (c.msg) html += `<p>${esc(c.msg)}</p>`;
+      if (c.state === 'retry') {
+        html += `<p>Connection interrupted — retrying in ${esc(c.delay ?? '?')}s… (sessions keep running on the server)</p>`;
+      }
+      if (c.state === 'failed') {
+        html += `<p>Not retrying automatically — hit Connect to try again.</p>`;
+      }
+      if (c.stderr) html += `<pre>${esc(c.stderr)}</pre>`;
     }
     $('statusDetail').innerHTML = html;
   }
@@ -262,12 +278,12 @@
   }
 
   $('newBtn').addEventListener('click', () => { editing = ''; confirmDelete = null; render(); });
-  $('backBtn').addEventListener('click', () => status.profile && webmux.connect(status.profile));
 
   $('list').addEventListener('click', async (ev) => {
     const b = ev.target.closest('button');
     if (!b) return;
     if (b.dataset.connect) { webmux.connect(b.dataset.connect); }
+    else if (b.dataset.disconnect) { webmux.disconnect(b.dataset.disconnect); }
     else if (b.dataset.edit) { editing = b.dataset.edit; confirmDelete = null; render(); }
     else if (b.dataset.del) {
       if (confirmDelete === b.dataset.del) {
@@ -288,8 +304,8 @@
   // Status pushes must never rebuild the form — a mid-edit re-render wipes
   // whatever the user is typing. Only the status areas and list refresh
   // (renderList is a no-op while a form is open).
-  webmux.onStatus((s) => { status = s; renderStatus(); renderList(); });
-  (async () => { status = await webmux.getStatus(); await refresh(); })();
+  webmux.onConns((s) => { snap = s; renderStatus(); renderList(); });
+  (async () => { snap = await webmux.getConns(); await refresh(); })();
 </script>
 </body>
 </html>

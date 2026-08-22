@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>webmux header</title>
+<style>
+  /* Matches the served page's palette (public/index.html) — this strip sits
+     directly above it and should read as the same chrome. */
+  :root {
+    --bg: #1f1f2b;
+    --border: #34344a;
+    --text: #c8c8d8;
+    --accent: #7aa2f7;
+    --accent-yellow: #e0af68;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    height: 38px;
+    background: var(--bg);
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    font: 12.5px/1 system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    user-select: none;
+    overflow: hidden;
+  }
+  #pills { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 6px 4px 11px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    opacity: 0.7;
+    flex: none;
+  }
+  .pill:hover { opacity: 1; background: rgba(255, 255, 255, 0.05); }
+  .pill.active {
+    opacity: 1;
+    border-color: rgba(224, 175, 104, 0.6);
+    background: rgba(224, 175, 104, 0.12);
+    color: var(--accent-yellow);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
+  .dot.connecting { background: var(--accent-yellow); animation: pulse 1.2s ease-in-out infinite; }
+  .dot.retry, .dot.failed { background: #f7768e; }
+  .dot.connected { background: #9ece6a; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  .x {
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: 10px;
+    cursor: pointer;
+    opacity: 0;
+    padding: 2px 4px;
+  }
+  .pill:hover .x { opacity: 0.55; }
+  .x:hover { opacity: 1 !important; color: #f7768e; }
+  #connectionsBtn {
+    margin-left: auto;
+    flex: none;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    font: inherit;
+    padding: 5px 12px;
+    cursor: pointer;
+    opacity: 0.7;
+  }
+  #connectionsBtn:hover { opacity: 1; border-color: var(--accent); color: var(--accent); }
+  #connectionsBtn.active {
+    opacity: 1;
+    border-color: rgba(122, 162, 247, 0.7);
+    background: rgba(122, 162, 247, 0.12);
+    color: var(--accent);
+  }
+</style>
+</head>
+<body>
+<div id="pills"></div>
+<button id="connectionsBtn" title="Manage connections (⌘⇧O)">Connections</button>
+
+<script>
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  let snap = { active: null, connections: [] };
+
+  const stateTip = (c) => ({
+    connecting: 'connecting…',
+    connected: 'connected',
+    retry: `interrupted — retrying${c.delay ? ` in ${c.delay}s` : ''}`,
+    failed: 'connection failed',
+  }[c.state] || c.state);
+
+  function render() {
+    document.getElementById('pills').innerHTML = snap.connections.map((c, i) => `
+      <span class="pill${c.name === snap.active ? ' active' : ''}"
+            data-show="${esc(c.name)}"
+            title="${esc(c.name)} — ${esc(stateTip(c))}${i < 9 ? ` (⌘${i + 1})` : ''}">
+        <span class="dot ${esc(c.state)}"></span>${esc(c.name)}
+        <button class="x" title="Disconnect" data-x="${esc(c.name)}">✕</button>
+      </span>`).join('');
+    document.getElementById('connectionsBtn').classList.toggle('active', snap.active === null);
+  }
+
+  document.getElementById('pills').addEventListener('click', (ev) => {
+    const x = ev.target.closest('[data-x]');
+    if (x) { webmux.disconnect(x.dataset.x); return; }
+    const pill = ev.target.closest('[data-show]');
+    if (pill) webmux.showConn(pill.dataset.show);
+  });
+  document.getElementById('connectionsBtn').addEventListener('click', () => webmux.showConn(null));
+
+  webmux.onConns((s) => { snap = s; render(); });
+  (async () => { snap = await webmux.getConns(); render(); })();
+</script>
+</body>
+</html>

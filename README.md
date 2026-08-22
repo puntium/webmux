@@ -32,8 +32,10 @@ deployment mode.
   are panes and internal nodes are horizontal/vertical splits with a drag-resizable
   divider. One xterm.js instance per pane, each on its own WebSocket. The fit
   addon reports pane resizes back to the server, which resizes both the PTY and
-  the headless terminal. The layout tree is saved to localStorage, so a reload
-  restores the arrangement and the headless snapshots restore each screen.
+  the headless terminal. The layout tree is saved to localStorage — keyed by
+  origin, so each client keeps its own layout per host, matching its own
+  screen — and a reload restores the arrangement while the headless
+  snapshots restore each screen.
 
 ## Run
 
@@ -62,8 +64,10 @@ local port to the server's remote unix socket over a supervised SSH tunnel
 (`ssh -L 127.0.0.1:<port>:<remote socket> host`) — no exposed port anywhere;
 your SSH key is the front door. The socket path is discovered automatically
 (the server advertises it in `~/.webmux/`), so a profile is just a name and
-an ssh host. Sessions survive disconnects (they live in the pty host), and
-the client reconnects automatically on network drops and laptop wake.
+an ssh host. Several hosts can be connected at once — each gets a pill in
+the client's header strip (⌘1…⌘9 switch between them). Sessions survive
+disconnects (they live in the pty host), and the client reconnects
+automatically on network drops and laptop wake.
 Design and setup: `docs/electron-client.md`.
 
 ### Pty host lifecycle

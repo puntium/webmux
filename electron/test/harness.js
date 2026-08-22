@@ -1,5 +1,6 @@
 // Headless test harness: stub the electron module, load main.js, drive the
-// IPC handlers, and assert on the persisted store + status transitions.
+// IPC handlers, and assert on the persisted store + per-connection status
+// transitions.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -21,15 +22,27 @@ const sent = [];
 const loads = [];
 
 class FakeWebContents {
-  getURL() { return this.url || ''; }
+  constructor() { this.url = ''; }
+  getURL() { return this.url; }
+  loadFile(f) { loads.push(['file', f]); this.url = 'file://' + f; }
+  loadURL(u) { loads.push(['url', u]); this.url = u; }
   send(ch, payload) { sent.push({ ch, payload }); }
   on() {}
+  close() {}
   setWindowOpenHandler() {}
 }
-class FakeBrowserWindow {
-  constructor() { this.webContents = new FakeWebContents(); FakeBrowserWindow.last = this; }
-  loadFile(f) { loads.push(['file', f]); this.webContents.url = 'file://' + f; }
-  loadURL(u) { loads.push(['url', u]); this.webContents.url = u; }
+class FakeWebContentsView {
+  constructor() { this.webContents = new FakeWebContents(); }
+  setBounds() {}
+  setVisible() {}
+}
+class FakeBaseWindow {
+  constructor() {
+    this.contentView = { addChildView: () => {}, removeChildView: () => {} };
+    FakeBaseWindow.last = this;
+  }
+  getContentBounds() { return { x: 0, y: 0, width: 1400, height: 900 }; }
+  setTitle(t) { this.title = t; }
   on() {}
 }
 
@@ -39,7 +52,8 @@ const stub = {
     whenReady: () => Promise.resolve(),
     on: () => {},
   },
-  BrowserWindow: FakeBrowserWindow,
+  BaseWindow: FakeBaseWindow,
+  WebContentsView: FakeWebContentsView,
   Menu: { setApplicationMenu: () => {}, buildFromTemplate: (t) => t },
   shell: { openExternal: () => {}, openPath: () => {} },
   powerMonitor: { on: () => {} },
@@ -62,6 +76,8 @@ require(path.join(appDir, 'main.js'));
 
 const readStore = () => JSON.parse(fs.readFileSync(path.join(scratch, 'config.json'), 'utf8'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const connState = async (name) =>
+  (await handlers['conns:get']()).connections.find((c) => c.name === name);
 
 (async () => {
   await sleep(50); // let whenReady handlers run
@@ -77,10 +93,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.strictEqual(r.lastProfile, 'me@oldbox');
   console.log('migration ok');
 
-  // migration set lastProfile → startup auto-connected → ssh to a real-ish
-  // host name will fail (BatchMode) and schedule a retry; don't assert on
-  // timing here, just that connect.html was landed first.
-  assert.deepStrictEqual(loads[0], ['file', 'connect.html'], 'lands connect page first');
+  // -- startup: local chrome loads, no auto-connect ----------------------
+  assert.ok(loads.some(([kind, f]) => kind === 'file' && f === 'header.html'), 'header strip loaded');
+  assert.ok(loads.some(([kind, f]) => kind === 'file' && f === 'connect.html'), 'connect page loaded');
+  let snap = await handlers['conns:get']();
+  assert.strictEqual(snap.active, null, 'starts on the connection page');
+  assert.strictEqual(snap.connections.length, 0, 'no auto-connect at startup');
 
   // -- save / validation ------------------------------------------------
   r = await handlers['profiles:save'](null, { name: '', host: 'x' });
@@ -103,11 +121,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.ok(!readStore().profiles.some((p) => p.name === 'dev'), 'old name gone');
   assert.strictEqual(readStore().profiles.find((p) => p.name === 'devbox').remoteSocket,
     '', 'blank socket stays blank (auto-discovery)');
-
-  // rename the active (auto-connected) profile: lastProfile must follow
-  r = await handlers['profiles:save'](null, { name: 'oldbox', host: 'me@oldbox' }, 'me@oldbox');
-  assert.ok(r.ok);
-  assert.strictEqual(readStore().lastProfile, 'oldbox', 'lastProfile follows rename');
   console.log('rename ok');
 
   // -- passwords --------------------------------------------------------
@@ -148,23 +161,78 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   r = await handlers['profiles:connect'](null, 'bad');
   assert.ok(r.ok);
   assert.strictEqual(readStore().lastProfile, 'bad', 'connect updates lastProfile');
-  let st = await handlers['status:get']();
+  let st = await connState('bad');
   assert.strictEqual(st.state, 'connecting');
-  assert.strictEqual(st.profile, 'bad');
   await sleep(2500); // ssh fails fast on .invalid
-  st = await handlers['status:get']();
+  st = await connState('bad');
   assert.strictEqual(st.state, 'failed', `expected failed, got ${st.state}`);
   assert.ok(st.stderr.length, 'ssh stderr captured');
   await sleep(2000); // an auto-retry would flip state back to connecting
-  st = await handlers['status:get']();
+  st = await connState('bad');
   assert.strictEqual(st.state, 'failed', 'no auto-retry after a never-connected failure');
   console.log('failed-parks ok  (stderr: ' + st.stderr.split('\n')[0] + ')');
 
-  // -- delete active profile stops everything ---------------------------
-  r = await handlers['profiles:delete'](null, 'bad');
+  // -- sticky local port ------------------------------------------------
+  // The auto-picked port is persisted (savedPort) so the profile keeps its
+  // origin — and its origin-keyed localStorage layout — across app runs.
+  const firstPort = readStore().profiles.find((p) => p.name === 'bad').savedPort;
+  assert.ok(firstPort > 0, 'auto-picked port persisted as savedPort');
+  r = await handlers['profiles:connect'](null, 'bad'); // retry the parked profile
   assert.ok(r.ok);
-  st = await handlers['status:get']();
-  assert.strictEqual(st.state, 'idle', 'delete of active profile → idle');
+  assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').savedPort,
+    firstPort, 'reconnect reuses the same port');
+  r = await handlers['profiles:save'](null, { name: 'bad', host: 'nobody@webmux-test.invalid' }, 'bad');
+  assert.ok(r.ok);
+  assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').savedPort,
+    firstPort, 'profile edit keeps savedPort (not a form field)');
+  await sleep(2500); // let the retried connect park again before moving on
+  console.log('sticky-port ok  (port ' + firstPort + ')');
+
+  // -- concurrent connections are independent ----------------------------
+  r = await handlers['profiles:save'](null, { name: 'bad2', host: 'nobody@webmux-test2.invalid' });
+  assert.ok(r.ok);
+  r = await handlers['profiles:connect'](null, 'bad2');
+  assert.ok(r.ok);
+  snap = await handlers['conns:get']();
+  assert.strictEqual(snap.connections.length, 2, 'two connections coexist');
+  assert.strictEqual((await connState('bad')).state, 'failed', 'first connection untouched by second');
+  assert.strictEqual((await connState('bad2')).state, 'connecting');
+  await sleep(2500);
+  assert.strictEqual((await connState('bad2')).state, 'failed', 'second connection fails independently');
+
+  // switching views never touches tunnels
+  await handlers['conns:show'](null, 'bad');
+  snap = await handlers['conns:get']();
+  assert.strictEqual(snap.active, 'bad', 'show switches the active view');
+  await handlers['conns:show'](null, null);
+  snap = await handlers['conns:get']();
+  assert.strictEqual(snap.active, null, 'show(null) returns to the connection page');
+
+  // disconnect removes just that connection
+  await handlers['conns:disconnect'](null, 'bad2');
+  snap = await handlers['conns:get']();
+  assert.strictEqual(snap.connections.length, 1, 'disconnect removes the connection');
+  assert.strictEqual(snap.connections[0].name, 'bad');
+  console.log('multi-connection ok');
+
+  // -- rename of a live connection follows in the snapshot ---------------
+  assert.strictEqual(readStore().lastProfile, 'bad2', 'lastProfile tracks most recent connect');
+  r = await handlers['profiles:save'](null, { name: 'bad-renamed', host: 'nobody@webmux-test.invalid' }, 'bad');
+  assert.ok(r.ok);
+  assert.strictEqual(readStore().lastProfile, 'bad2', 'rename of another profile leaves lastProfile alone');
+  snap = await handlers['conns:get']();
+  assert.strictEqual(snap.connections[0].name, 'bad-renamed', 'connection renamed in place');
+  r = await handlers['profiles:save'](null, { name: 'bad2-renamed', host: 'nobody@webmux-test2.invalid' }, 'bad2');
+  assert.ok(r.ok);
+  assert.strictEqual(readStore().lastProfile, 'bad2-renamed', 'lastProfile follows rename');
+
+  // -- delete of a connected profile disconnects it ----------------------
+  r = await handlers['profiles:delete'](null, 'bad-renamed');
+  assert.ok(r.ok);
+  snap = await handlers['conns:get']();
+  assert.strictEqual(snap.connections.length, 0, 'delete disconnects');
+  r = await handlers['profiles:delete'](null, 'bad2-renamed');
+  assert.ok(r.ok);
   assert.strictEqual(readStore().lastProfile, null);
   console.log('delete/stop ok');
 

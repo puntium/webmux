@@ -10,14 +10,24 @@ owner; the frontend is unchanged.
 
 ```
 Electron main process (macOS)
-  ├─ spawns/supervises: ssh -N -L 127.0.0.1:<local>:<remote socket> <host>
-  └─ BrowserWindow → http://127.0.0.1:<local>
-                          │  (page, /api/*, /ws all ride the tunnel)
-      (remote) server.js — plain http on a unix socket
-                           ($XDG_RUNTIME_DIR/webmux/<name>.http.sock,
-                            0600 in a 0700 dir)
-                          └─ ptyhost daemon (unchanged)
+  └─ BaseWindow
+       ├─ header strip (header.html, client-owned): one pill per connection
+       └─ per connected profile:
+            ├─ spawns/supervises: ssh -N -L 127.0.0.1:<local>:<remote socket> <host>
+            └─ WebContentsView → http://127.0.0.1:<local>
+                                     │  (page, /api/*, /ws all ride the tunnel)
+                 (remote) server.js — plain http on a unix socket
+                                      ($XDG_RUNTIME_DIR/webmux/<name>.http.sock,
+                                       0600 in a 0700 dir)
+                                     └─ ptyhost daemon (unchanged)
 ```
+
+Several profiles can be connected at once; the header pills (or ⌘1…⌘9)
+switch which view fills the window, and hidden views keep their tunnels and
+WebSockets alive (`backgroundThrottling: false`), so switching back is
+instant. The pill strip lives in a client-owned view, not in the served
+page: a remote server must never learn the other profiles or drive
+switching.
 
 Design decisions, and why:
 
@@ -43,11 +53,19 @@ Design decisions, and why:
   automatically. The profile's socket field is normally blank (= discover
   instance `default`); a bare name discovers that named instance, an
   absolute path skips discovery entirely.
-- **Fixed local port across tunnel respawns.** app.js already reconnects its
-  WebSockets with backoff and repaints from ptyhost snapshots. If the tunnel
-  comes back on the same port, the loaded page self-heals — no reload, no
-  lost tile layout. The port is chosen once at startup (or pinned in config)
-  and reused for every respawn.
+- **Fixed local port — across tunnel respawns and app runs.** app.js
+  already reconnects its WebSockets with backoff and repaints from ptyhost
+  snapshots. If the tunnel comes back on the same port, the loaded page
+  self-heals — no reload, no lost tile layout. The port is picked once per
+  profile (or pinned in the profile) and then persisted (`savedPort` in
+  config.json), so the profile keeps the same origin
+  `http://127.0.0.1:<port>` across app runs: the page's origin-keyed
+  localStorage — the layout tree and file-browser state — survives a
+  close/reopen. Layouts thereby stay per client *and* per host, which is
+  the right scoping: an arrangement fits the client's screen, not the
+  server. If another program grabbed the saved port, a fresh one is picked
+  (that stash of localStorage waits under the old origin until the port
+  frees up again).
 - **Resume is ptyhost's job and is untouched.** Disconnect (tunnel death,
   sleep, network change) just detaches the socket; the headless mirror keeps
   recording; reattach replays a full snapshot.
@@ -72,7 +90,9 @@ A self-contained npm package so the server install never pulls Electron.
   - **Profiles** at `<userData>/config.json` (`~/Library/Application
     Support/webmux/config.json` on macOS): `{ profiles: [{ name, host,
     sshPort, identityFile, remoteSocket, localPort, extraOptions,
-    passwordEnc }], lastProfile }`. The pre-profiles single-host shape is
+    passwordEnc, savedPort }], lastProfile }`. `savedPort` is main's
+    bookkeeping (the persisted auto-picked local port, see below), carried
+    through edits rather than shown in the form. The pre-profiles single-host shape is
     migrated on first load, and the pre-unix-socket `remotePort` field is
     dropped (such profiles fall back to auto-discovery). `remoteSocket` is
     validated on save: blank, an absolute path, or a `[A-Za-z0-9._-]+`
@@ -103,20 +123,27 @@ A self-contained npm package so the server install never pulls Electron.
     ~30s. `powerMonitor` `resume` kills the stale tunnel on lid-open so an
     interrupted session reconnects at once instead of waiting for the
     keepalive timeout.
-  - **Window**: the connection page (`connect.html`) shows live status
-    until the server first answers through the tunnel, then `loadURL`.
-    `did-fail-load` falls back to it (e.g. Cmd+R while the tunnel is down).
-    While the app page is loaded, tunnel blips are *not* a page swap —
-    app.js's own retry handles them.
+  - **Window**: a `BaseWindow` holding a 38px header view (`header.html`)
+    plus one `WebContentsView` per connection and one for the connection
+    page (`connect.html`); exactly one content view is visible. Connecting
+    reveals the host's view when the server first answers through the
+    tunnel — unless the user explicitly navigated elsewhere meanwhile
+    (explicit navigation cancels pending reveals). `did-fail-load` on a
+    connection view falls back to the connection page (e.g. Cmd+R while the
+    tunnel is down). While a view's app page is loaded, tunnel blips are
+    *not* a view swap — app.js's own retry handles them, and failures of a
+    background connection only recolor its pill.
   - **macOS niceties**: no Cmd+W accelerator (closing the window while
     typing in a terminal is the classic Electron footgun); links open in the
     default browser (`setWindowOpenHandler` + `will-navigate` guard);
     standard Edit menu so Cmd+C/V clipboard roles work.
-- `connect.html` + `preload.js` — the connection manager: list / add /
-  edit / delete profiles, connect, live tunnel status with ssh stderr for
-  diagnosis. Talks to main over a contextBridge IPC API that the preload
-  exposes **only to `file:` pages** — the remote app page must not be able
-  to read or mutate profiles (they contain ssh arguments).
+- `connect.html` + `header.html` + `preload.js` — the connection manager
+  (list / add / edit / delete profiles, per-profile connect/disconnect,
+  live tunnel status with ssh stderr for diagnosis) and the pill strip.
+  Both talk to main over a contextBridge IPC API that the preload exposes
+  **only to `file:` pages** — the remote app pages must not be able to
+  read or mutate profiles (they contain ssh arguments) or see the other
+  connections.
 - `package.json` — `electron` + `electron-builder`; `npm start` to run,
   `npm run dist` → zipped `.app` for Apple Silicon (`--x64`/`--universal`
   for Intel). Unsigned: first launch needs right-click → Open or
@@ -147,6 +174,4 @@ itself is equally fine. No signing/notarization for personal use.
 - Frontend polish pass: make sure a failed `/api/sessions` poll during a
   tunnel outage can't wedge the UI (WS reconnect is already solid).
 - Tray/dock badge for tunnel state.
-- Simultaneous connections — one window per profile (profiles + switching
-  exist; only one is active at a time today).
 - Signing/notarization if the app is ever distributed.
