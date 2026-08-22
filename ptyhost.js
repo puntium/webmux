@@ -87,6 +87,12 @@ class Session {
       // headless host (real X clients would fail anyway).
       PATH: `${SHIM_DIR}:${process.env.PATH}`,
       WEBMUX_CLIPBOARD_DIR: PASTE_DIR,
+      // Lets the xdg-open shim route URLs back to the client that is
+      // actually viewing this session (see shims/xdg-open).
+      WEBMUX_SESSION: this.id,
+      // Programs that consult $BROWSER directly (and the real xdg-open
+      // script's own fallback chain) land on the same shim.
+      BROWSER: path.join(SHIM_DIR, 'xdg-open'),
       DISPLAY: process.env.DISPLAY || ':0',
     };
     // The host may itself run under tmux; hide that from sessions so a

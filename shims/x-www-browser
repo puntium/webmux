@@ -1,0 +1,3 @@
+#!/bin/sh
+# webmux x-www-browser shim — same URL relay as ./xdg-open.
+exec "$(dirname "$0")/xdg-open" "$@"

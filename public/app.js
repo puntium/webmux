@@ -416,6 +416,10 @@ async function writeHostClipboard(text) {
   setStatus(ok ? 'clipboard set from terminal' : 'clipboard write blocked by the browser');
 }
 
+// 'open-url' frames the server could not target at one session are broadcast
+// on every tab's socket; remember served ids so the chooser pops only once.
+const seenOpenIds = new Set();
+
 // Clicking a detected URL in a terminal pops this chooser instead of xterm's
 // default open-immediately behavior. Returns focus to the terminal on close.
 function showLinkModal(uri, tile) {
@@ -639,6 +643,13 @@ function makeTile(sessionId) {
           setStatus(msg.mode === 'claude'
             ? 'image in clipboard — Ctrl+V forwarded to Claude'
             : `pasted image → ${msg.path}`);
+        } else if (msg.type === 'open-url') {
+          // A program in the session ran xdg-open (see shims/): offer the
+          // same chooser as a clicked terminal link.
+          if (!seenOpenIds.has(msg.id)) {
+            seenOpenIds.add(msg.id);
+            showLinkModal(msg.url, this);
+          }
         } else if (msg.type === 'error') {
           removeTile(sessionId, false); // session no longer exists on the host
         }

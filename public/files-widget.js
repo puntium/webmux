@@ -4,10 +4,12 @@
    (never a server session id) and its state ({ dir, cursor }) persists in
    localStorage next to the layout. Columns show the ancestor chain of `dir`;
    the cursor entry gets one extra column — a listing for directories, a
-   preview (text/image/stat) for files. Arrows / hjkl navigate like yazi.
-   Files or folders dragged onto a column upload into that column's
-   directory (folders recreate their tree); files or images pasted while
-   the widget is focused upload into the rightmost directory shown.
+   preview (text/image/stat) for files. Arrows / hjkl navigate like yazi;
+   r/F2 renames the selected entry inline and d/Delete deletes it (after a
+   confirm; directories delete recursively) — both also have buttons on the
+   selected row. Files or folders dragged onto a column upload into that
+   column's directory (folders recreate their tree); files or images pasted
+   while the widget is focused upload into the rightmost directory shown.
 
    app.js owns the layout/tab machinery and registers the tile returned by
    makeFilesTile() — the tile interface it expects is
@@ -110,6 +112,53 @@ async function dropFiles(ev) {
   return out;
 }
 
+// Delete confirmation, styled like the terminal link chooser. Resolves true
+// on confirm; Escape / backdrop / Cancel resolve false.
+function confirmModal(text) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'link-modal-overlay';
+    overlay.innerHTML = `
+      <div class="link-modal" role="dialog" aria-label="Confirm delete">
+        <div class="link-url"></div>
+        <div class="link-actions">
+          <button class="link-cancel">Cancel</button>
+          <button class="confirm-del danger">Delete</button>
+        </div>
+      </div>`;
+    overlay.querySelector('.link-url').textContent = text;
+    const done = (val) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey, true);
+      resolve(val);
+    };
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        done(false);
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) done(false); });
+    overlay.querySelector('.link-cancel').addEventListener('click', () => done(false));
+    overlay.querySelector('.confirm-del').addEventListener('click', () => done(true));
+    document.body.appendChild(overlay);
+    overlay.querySelector('.confirm-del').focus();
+  });
+}
+
+async function fsApi(endpoint, body) {
+  const res = await fetch(`/api/fs/${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const out = await res.json();
+  if (out.error) throw new Error(out.error);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // The tile
 // ---------------------------------------------------------------------------
@@ -174,6 +223,74 @@ export function makeFilesTile(id) {
     rerender();
   }
 
+  // Delete the entry under the cursor (after confirmation); the cursor moves
+  // to the next entry, Finder-style, so repeated deletes flow.
+  async function deleteCursor() {
+    const name = state.cursor;
+    if (!name) return;
+    const entries = (await list(state.dir)).entries || [];
+    const entry = entries.find((e) => e.name === name);
+    if (!entry) return;
+    const ok = await confirmModal(entry.type === 'dir'
+      ? `Delete folder “${name}” and everything in it?`
+      : `Delete “${name}”?`);
+    colsEl.focus();
+    if (!ok) return;
+    try {
+      await fsApi('delete', { path: fsJoin(state.dir, name) });
+    } catch (err) {
+      setStatus(`delete failed: ${err.message || err}`);
+      return;
+    }
+    setStatus(`deleted ${name}`);
+    const i = entries.findIndex((e) => e.name === name);
+    const rest = entries.filter((e) => e.name !== name);
+    state.cursor = rest[Math.min(i, rest.length - 1)]?.name ?? null;
+    listCache.delete(state.dir);
+    rerender();
+  }
+
+  // Swap the cursor row's name for an inline input. Enter commits, Escape or
+  // focus loss cancels; the stem is preselected like Finder's rename.
+  function startRename() {
+    const row = colsEl.querySelector('.files-entry.cursor');
+    const nameEl = row?.querySelector('.files-name');
+    if (!nameEl || row.querySelector('input')) return;
+    const oldName = state.cursor;
+    const input = document.createElement('input');
+    input.className = 'files-rename';
+    input.value = oldName;
+    nameEl.replaceWith(input);
+    input.focus();
+    const dot = oldName.startsWith('.') ? -1 : oldName.lastIndexOf('.');
+    input.setSelectionRange(0, dot > 0 ? dot : oldName.length);
+    let settled = false;
+    const finish = async (commit) => {
+      if (settled) return;
+      settled = true;
+      const newName = input.value.trim();
+      if (commit && newName && newName !== oldName) {
+        try {
+          const out = await fsApi('rename', { path: fsJoin(state.dir, oldName), name: newName });
+          state.cursor = out.name;
+          setStatus(`renamed ${oldName} → ${out.name}`);
+        } catch (err) {
+          setStatus(`rename failed: ${err.message || err}`);
+        }
+        listCache.delete(state.dir);
+      }
+      rerender();
+      colsEl.focus();
+    };
+    input.addEventListener('keydown', (ev) => {
+      ev.stopPropagation(); // typed letters must not become navigation
+      if (ev.key === 'Enter') finish(true);
+      else if (ev.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(false));
+    input.addEventListener('click', (ev) => ev.stopPropagation()); // no cursor re-set
+  }
+
   // targetDir is a thunk: for the colsEl fallback the target (the rightmost
   // directory) changes as the user navigates.
   function enableDrop(el, targetDir) {
@@ -220,6 +337,25 @@ export function makeFilesTile(id) {
       nm.className = 'files-name' + (e.symlink ? ' symlink' : '');
       nm.textContent = e.name;
       row.appendChild(nm);
+      if (isCursorCol && e.name === hlName) {
+        // Mouse affordance for the keyboard actions, shown on the selected
+        // row only.
+        const mkAct = (txt, title, fn) => {
+          const b = document.createElement('button');
+          b.className = 'files-act';
+          b.textContent = txt;
+          b.title = title;
+          b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
+          return b;
+        };
+        const acts = document.createElement('span');
+        acts.className = 'files-acts';
+        acts.append(
+          mkAct('✎', 'Rename (r)', startRename),
+          mkAct('✕', 'Delete (d)', deleteCursor),
+        );
+        row.appendChild(acts);
+      }
       if (e.type === 'dir') {
         const arrow = document.createElement('span');
         arrow.className = 'files-arrow';
@@ -345,6 +481,7 @@ export function makeFilesTile(id) {
 
   colsEl.addEventListener('keydown', async (ev) => {
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (ev.target !== colsEl) return; // e.g. the inline rename input
     const step = { ArrowUp: -1, k: -1, ArrowDown: 1, j: 1 }[ev.key];
     if (step) {
       ev.preventDefault();
@@ -369,6 +506,14 @@ export function makeFilesTile(id) {
       state.cursor = fsBase(state.dir);
       state.dir = fsParent(state.dir);
       rerender();
+    } else if (ev.key === 'r' || ev.key === 'F2') {
+      if (!state.cursor) return;
+      ev.preventDefault();
+      startRename();
+    } else if (ev.key === 'd' || ev.key === 'Delete' || ev.key === 'Backspace') {
+      if (!state.cursor) return;
+      ev.preventDefault();
+      deleteCursor();
     }
   });
 

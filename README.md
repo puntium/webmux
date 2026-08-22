@@ -92,6 +92,11 @@ node ptyhost.js --name X            # run a host standalone in the foreground
 - Reload the page: all live sessions reattach with state and layout intact.
 - Click a URL in a terminal (underlined on hover, via `@xterm/addon-web-links`)
   to get a chooser: copy it to the clipboard or open it in a new browser tab.
+- Programs that try to launch a browser (`xdg-open`, `sensible-browser`,
+  `x-www-browser`, `$BROWSER` — e.g. `gh pr view --web`, OAuth logins) hit
+  shims in `shims/` instead: the URL is spooled through the paste dir to the server,
+  which forwards it to the client viewing that session (`WEBMUX_SESSION`),
+  and the same copy/open chooser pops up there.
 
 ## File browser
 
@@ -105,7 +110,10 @@ dragged onto a column upload into that column's directory — multiple at
 once is fine, and folders recreate their directory tree (empty
 subdirectories are skipped). Files or images pasted while the browser is
 focused upload into the rightmost directory shown (`POST /api/fs/upload`,
-colliding names deduped Finder-style). Browser tabs
+colliding names deduped Finder-style). The selected entry can be renamed
+(`r`/`F2`, inline, `POST /api/fs/rename`) or deleted (`d`/`Delete`, after a
+confirmation — directories recursively; `POST /api/fs/delete`), via keyboard
+or the ✎/✕ buttons on the row. Browser tabs
 are client-side widgets (no server session) implemented in
 `public/files-widget.js`; their path and cursor persist in localStorage
 alongside the layout, and they drag between panes like any other tab.

@@ -188,6 +188,52 @@ app.post('/api/paste', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Browser-open spool (xdg-open & friends). No browser exists on this headless
+// host, so the shims in shims/ drop "open-*" files into PASTE_DIR (line 1:
+// session id, line 2: URL) instead of opening anything. We watch the dir,
+// claim each file by rename (several webmux servers may share the spool), and
+// forward the URL to the browser client as an 'open-url' message — the client
+// shows the same open/copy chooser as a clicked terminal URL.
+// ---------------------------------------------------------------------------
+
+const wsClients = new Set(); // every attached browser socket
+const wsBySession = new Map(); // session id -> Set<ws>, for targeted delivery
+let openSeq = 0;
+
+function processOpenSpool() {
+  let names;
+  try { names = fs.readdirSync(PASTE_DIR); } catch { return; }
+  for (const n of names) {
+    if (!n.startsWith('open-')) continue;
+    const claimed = path.join(PASTE_DIR, `.claimed-${n}`);
+    try { fs.renameSync(path.join(PASTE_DIR, n), claimed); } catch { continue; } // lost the claim race
+    let sid, url;
+    try {
+      [sid, url] = fs.readFileSync(claimed, 'utf8').split('\n');
+      fs.rmSync(claimed, { force: true });
+    } catch { continue; }
+    if (!/^https?:\/\//.test(url)) continue;
+    // Deliver to the session the opener ran in when known (WEBMUX_SESSION,
+    // exported by the pty host); otherwise broadcast — every tab's socket
+    // gets the frame, so the client dedupes by id.
+    const targets = wsBySession.get(sid)?.size ? wsBySession.get(sid) : wsClients;
+    const frame = JSON.stringify({ type: 'open-url', url, id: `open-${Date.now()}-${openSeq++}` });
+    for (const ws of targets) {
+      if (ws.readyState === ws.OPEN) ws.send(frame);
+    }
+  }
+}
+
+// Spool files left over from before this server started are stale requests;
+// popping them up now would be surprising. Drop them.
+for (const n of fs.readdirSync(PASTE_DIR)) {
+  if (n.startsWith('open-') || n.startsWith('.claimed-open-')) {
+    fs.rmSync(path.join(PASTE_DIR, n), { force: true });
+  }
+}
+fs.watch(PASTE_DIR, () => processOpenSpool());
+
+// ---------------------------------------------------------------------------
 // File browser API (Miller-columns widget). No sandboxing: terminals already
 // expose the whole filesystem, so these endpoints match that trust level.
 // ---------------------------------------------------------------------------
@@ -293,6 +339,39 @@ app.post('/api/fs/upload', express.raw({ type: () => true, limit: '200mb' }), (r
   }
 });
 
+// Delete / rename from the file browser. Deletes are recursive — the client
+// confirms before calling; renames stay within the entry's directory.
+app.post('/api/fs/delete', (req, res) => {
+  const target = resolveFsPath(req.body?.path);
+  if (target === '/' || target === HOME) {
+    return res.status(400).json({ error: 'refusing to delete that' });
+  }
+  try {
+    fs.rmSync(target, { recursive: true });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err.code || String(err) });
+  }
+});
+
+app.post('/api/fs/rename', (req, res) => {
+  const from = resolveFsPath(req.body?.path);
+  const name = String(req.body?.name || '');
+  if (!name || name === '.' || name === '..' || name.includes('/')) {
+    return res.status(400).json({ error: 'invalid name' });
+  }
+  const to = path.join(path.dirname(from), name);
+  if (to !== from && fs.existsSync(to)) {
+    return res.status(400).json({ error: 'name already taken' });
+  }
+  try {
+    fs.renameSync(from, to);
+    res.json({ ok: true, name });
+  } catch (err) {
+    res.status(400).json({ error: err.code || String(err) });
+  }
+});
+
 // Raw file bytes (image previews load this as <img src>).
 app.get('/api/fs/raw', (req, res) => {
   const file = resolveFsPath(req.query.path);
@@ -336,6 +415,14 @@ async function main() {
     const url = new URL(req.url, 'http://localhost');
     const id = url.searchParams.get('session');
 
+    // Register for open-url delivery (see the browser-open spool above).
+    wsClients.add(ws);
+    if (id) {
+      let set = wsBySession.get(id);
+      if (!set) wsBySession.set(id, set = new Set());
+      set.add(ws);
+    }
+
     // One pty-host connection per attached browser client. The host's frames
     // mirror the WS protocol, so host→browser lines are forwarded verbatim
     // (snapshot/output/title/exit/error). Writes issued before the unix
@@ -365,7 +452,15 @@ async function main() {
       else if (msg.type === 'clipboard-sync') writeClipboardSlot(msg); // slot only, no injection
     });
 
-    ws.on('close', () => sock.destroy());
+    ws.on('close', () => {
+      sock.destroy();
+      wsClients.delete(ws);
+      const set = wsBySession.get(id);
+      if (set) {
+        set.delete(ws);
+        if (!set.size) wsBySession.delete(id);
+      }
+    });
   });
 
   // Same stale-socket dance as the pty host: if the socket file exists,
