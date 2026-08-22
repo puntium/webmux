@@ -10,6 +10,9 @@
    selected row. Files or folders dragged onto a column upload into that
    column's directory (folders recreate their tree); files or images pasted
    while the widget is focused upload into the rightmost directory shown.
+   Renders are keyed diffs (patchCols): surviving columns keep their scroll
+   position, removed ones collapse and new ones grow in, and the horizontal
+   scroll eases to the newest column instead of jumping.
 
    app.js owns the layout/tab machinery and registers the tile returned by
    makeFilesTile() — the tile interface it expects is
@@ -319,6 +322,7 @@ export function makeFilesTile(id) {
   function buildCol(dirPath, data, hlName, isCursorCol) {
     const col = document.createElement('div');
     col.className = 'files-col';
+    col.dataset.key = dirPath;
     enableDrop(col, () => dirPath);
     if (data.error) {
       col.appendChild(msg(data.error));
@@ -413,6 +417,9 @@ export function makeFilesTile(id) {
   function buildPreviewCol(filePath, g) {
     const col = document.createElement('div');
     col.className = 'files-col files-preview';
+    // Fixed key: moving the cursor between files updates the one preview
+    // column in place instead of tearing it down and growing a new one.
+    col.dataset.key = 'preview';
     enableDrop(col, () => fsParent(filePath));
     col.appendChild(msg('…'));
     fetch(`/api/fs/preview?path=${encodeURIComponent(filePath)}`)
@@ -457,13 +464,108 @@ export function makeFilesTile(id) {
       colEls.push(buildPreviewCol(fsJoin(state.dir, cursorEntry.name), g));
     }
 
-    colsEl.replaceChildren(...colEls);
+    const animate = patchCols(colEls);
     if (tile.labelEl) tile.labelEl.textContent = tile.label();
     saveWidgets();
     requestAnimationFrame(() => {
-      colsEl.scrollLeft = colsEl.scrollWidth; // newest column in view
-      colsEl.querySelector('.files-entry.cursor')?.scrollIntoView({ block: 'nearest' });
+      if (animate) smoothScrollRight();
+      else colsEl.scrollLeft = colsEl.scrollWidth; // first render: jump straight there
+      revealCursorRow();
     });
+  }
+
+  // Swap the visible column set with enter/leave animations. Columns are
+  // keyed by directory path (the preview column by a fixed key): surviving
+  // columns are replaced in place with their scroll position carried over,
+  // removed ones collapse (.leaving) and new ones grow in (.entering).
+  // Entering columns go before any collapsing ones so the two motions read
+  // as a single slide. Miller-column navigation only ever changes a suffix
+  // of the column list, so in-order insertion after the previous kept/new
+  // column is always position-correct.
+  function patchCols(colEls) {
+    const live = [...colsEl.children].filter((el) => !el.classList.contains('leaving'));
+    const oldByKey = new Map(live.map((el) => [el.dataset.key, el]));
+    const newKeys = new Set(colEls.map((el) => el.dataset.key));
+    const animate = live.length > 0; // the initial render appears without motion
+    const leaving = new Set(live.filter((el) => !newKeys.has(el.dataset.key)));
+    const isPreview = (el) => el?.classList?.contains('files-preview');
+    let anchor = null;
+    for (const el of colEls) {
+      const old = oldByKey.get(el.dataset.key);
+      if (old) {
+        const scrollTop = old.scrollTop;
+        old.replaceWith(el);
+        el.scrollTop = scrollTop;
+      } else {
+        const next = anchor ? anchor.nextSibling : colsEl.firstChild;
+        if (animate && leaving.has(next) && !isPreview(next) && !isPreview(el)) {
+          // Same-width column dying in this exact slot (e.g. cursor moved to
+          // a sibling folder): the slot's geometry doesn't change, so a
+          // grow-beside-collapse would just shove the old column sideways.
+          // Swap immediately and fade the new content in instead.
+          leaving.delete(next);
+          next.replaceWith(el);
+          el.classList.add('swapping');
+        } else {
+          if (animate) el.classList.add('entering');
+          colsEl.insertBefore(el, next);
+        }
+      }
+      anchor = el;
+    }
+    for (const el of leaving) {
+      el.classList.add('leaving');
+      const drop = (ev) => { if (!ev || ev.target === el) el.remove(); };
+      el.addEventListener('animationend', drop);
+      setTimeout(drop, 300); // in case animationend never fires (hidden tab)
+    }
+    return animate;
+  }
+
+  // Ease the horizontal scroll toward "rightmost column at the right edge",
+  // re-reading the target every frame because column widths are animating
+  // underneath. The cursor's own column is never pushed off the left edge.
+  // A wheel gesture cancels the chase so the user can take over mid-flight.
+  let scrollAnim = 0;
+  colsEl.addEventListener('wheel', () => cancelAnimationFrame(scrollAnim), { passive: true });
+  function smoothScrollRight() {
+    cancelAnimationFrame(scrollAnim);
+    if (!colsEl.isConnected) return;
+    const target = () => {
+      let t = colsEl.scrollWidth - colsEl.clientWidth;
+      const cursorCol = colsEl.querySelector('.files-entry.cursor')?.closest('.files-col');
+      if (cursorCol) {
+        t = Math.min(t, colsEl.scrollLeft
+          + cursorCol.getBoundingClientRect().left - colsEl.getBoundingClientRect().left);
+      }
+      return Math.max(0, t);
+    };
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      // Wait out the (near-instant) column animations, then jump.
+      setTimeout(() => { colsEl.scrollLeft = target(); }, 30);
+      return;
+    }
+    const t0 = performance.now();
+    const step = (now) => {
+      const d = target() - colsEl.scrollLeft;
+      if (now - t0 >= 300) { colsEl.scrollLeft += d; return; } // settle exactly
+      colsEl.scrollLeft += d * 0.25;
+      scrollAnim = requestAnimationFrame(step);
+    };
+    scrollAnim = requestAnimationFrame(step);
+  }
+
+  // Vertical-only "scrollIntoView nearest" for the cursor row — real
+  // scrollIntoView also scrolls ancestors horizontally, which would fight
+  // smoothScrollRight.
+  function revealCursorRow() {
+    const row = colsEl.querySelector('.files-entry.cursor');
+    if (!row) return;
+    const col = row.parentElement;
+    if (row.offsetTop < col.scrollTop) col.scrollTop = row.offsetTop;
+    else if (row.offsetTop + row.offsetHeight > col.scrollTop + col.clientHeight) {
+      col.scrollTop = row.offsetTop + row.offsetHeight - col.clientHeight;
+    }
   }
 
   enableDrop(colsEl, () => rightmostDir || state.dir);

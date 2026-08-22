@@ -234,6 +234,7 @@
       min-height: 0;
     }
     .files-col {
+      position: relative; /* makes row offsetTop column-relative (cursor reveal) */
       flex: none;
       width: 200px;
       overflow-y: auto;
@@ -286,6 +287,27 @@
       outline: none;
     }
     .files-msg { padding: 6px 10px; opacity: 0.5; font-size: 12px; font-style: italic; }
+    /* Column enter/leave: new columns grow out of their parent while removed
+       ones collapse, so navigation slides instead of jumping. The implicit
+       keyframe endpoint picks up each column's own width (200px listing,
+       600px preview). .leaving must come after .entering so it wins when a
+       column is recycled mid-animation. */
+    .files-col.entering { animation: files-col-in 180ms ease-out; }
+    .files-col.leaving {
+      animation: files-col-out 180ms ease-in forwards;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    .files-col.leaving .files-name { text-overflow: clip; } /* no ellipsis churn while collapsing */
+    .files-col.swapping { animation: files-fade-in 140ms ease-out; } /* same-slot sibling swap */
+    @keyframes files-col-in { from { width: 0; opacity: 0; } }
+    @keyframes files-col-out { to { width: 0; opacity: 0; } }
+    .files-preview-inner { animation: files-fade-in 140ms ease-out; }
+    @keyframes files-fade-in { from { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      .files-col.entering, .files-col.leaving, .files-col.swapping,
+      .files-preview-inner { animation-duration: 1ms; }
+    }
     .files-col.drop-target, .files-cols.drop-target {
       box-shadow: inset 0 0 0 2px var(--accent);
       background: rgba(122, 162, 247, 0.07);
