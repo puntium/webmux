@@ -399,11 +399,32 @@ app.delete('/api/sessions/:id', async (req, res) => {
 // WebSocket attach: /ws?session=<id>
 // ---------------------------------------------------------------------------
 
+// One long-lived watch connection to the pty host, fanning session-level
+// events (currently title changes) out to every browser socket. This is what
+// keeps background tabs' titles live: their tiles have no websocket of their
+// own, so title events ride along on whichever sockets are open and the
+// client routes them by session id. Reconnects with a delay if the host goes
+// away (nudging it back up first, in case nothing else has).
+function watchHostEvents() {
+  const sock = net.connect(socketPath(HOST_NAME));
+  sock.on('connect', () => sock.write(JSON.stringify({ cmd: 'watch' }) + '\n'));
+  readLines(sock, (line) => {
+    for (const ws of wsClients) {
+      if (ws.readyState === ws.OPEN) ws.send(line);
+    }
+  });
+  sock.on('error', () => {}); // 'close' handles the retry
+  sock.on('close', () => {
+    setTimeout(() => ensureHost(HOST_NAME).catch(() => {}).then(watchHostEvents), 1000);
+  });
+}
+
 async function main() {
   // Spawn (or adopt) the pty host before accepting clients. It runs
   // detached, so it — and every shell in it — outlives this server.
   const pong = await ensureHost(HOST_NAME);
   console.log(`pty host '${HOST_NAME}' up (pid ${pong.pid}, ${pong.sessions} session(s))`);
+  watchHostEvents();
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });

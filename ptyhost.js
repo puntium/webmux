@@ -23,6 +23,8 @@
 //   {cmd:'shutdown'}           → {ok}, then all ptys are killed and the daemon exits
 //   {cmd:'attach', session}    → switches to streaming: snapshot/output/title/exit
 //                                out, input/resize in; closing the connection detaches
+//   {cmd:'watch'}              → switches to streaming session-level events for ALL
+//                                sessions: {type:'session-title', session, title}
 
 const fs = require('fs');
 const net = require('net');
@@ -55,6 +57,11 @@ for (let i = 0; i < argv.length; i++) {
 /** @type {Map<string, Session>} */
 const sessions = new Map();
 
+// Sockets in watch mode (cmd:'watch') — they receive session-level events
+// for every session, so a client can track state (e.g. tab titles) for
+// sessions it isn't attached to.
+const watchers = new Set();
+
 function send(sock, obj) {
   if (!sock.destroyed) sock.write(JSON.stringify(obj) + '\n');
 }
@@ -78,6 +85,9 @@ class Session {
     this.term.onTitleChange((title) => {
       this.title = title;
       for (const sock of this.clients) send(sock, { type: 'title', title });
+      for (const sock of watchers) {
+        send(sock, { type: 'session-title', session: this.id, title });
+      }
     });
 
     const env = {
@@ -231,6 +241,10 @@ function handleCommand(sock, msg, onAttach) {
       onAttach(s);
       break;
     }
+    case 'watch':
+      watchers.add(sock);
+      sock.on('close', () => watchers.delete(sock));
+      break;
     default:
       send(sock, { ok: false, error: `unknown cmd ${JSON.stringify(msg.cmd)}` });
       sock.end();

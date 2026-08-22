@@ -635,6 +635,11 @@ function makeTile(sessionId) {
           term.write(msg.data, () => { if (this.sticky) term.scrollToBottom(); });
         } else if (msg.type === 'title') {
           this.setTitle(msg.title);
+        } else if (msg.type === 'session-title') {
+          // Broadcast for ANY session, muxed over every open socket so
+          // background tabs (which have no socket) stay current. Arrives on
+          // each open socket; setTitle is idempotent so that's fine.
+          tiles.get(msg.session)?.setTitle(msg.title);
         } else if (msg.type === 'exit') {
           this.exited = true;
           term.write(`\r\n\x1b[31m[session exited: ${msg.exitCode}]\x1b[0m\r\n`);
@@ -820,7 +825,8 @@ function newFilesSession() {
 // ---------------------------------------------------------------------------
 
 async function attachExisting() {
-  const live = (await (await fetch('/api/sessions')).json()).map((s) => s.id);
+  const sessions = await (await fetch('/api/sessions')).json();
+  const live = sessions.map((s) => s.id);
   const liveSet = new Set(live);
 
   tree = loadLayout();
@@ -836,9 +842,13 @@ async function attachExisting() {
   }
 
   focusedPane = firstPane(tree);
+  // Seed titles from the session list so background tabs show their real
+  // title immediately — their websocket (the usual title source) only
+  // connects once the tab is brought to the foreground.
+  const titles = new Map(sessions.map((s) => [s.id, s.title]));
   for (const id of collectIds(tree)) {
     if (isFilesId(id)) tiles.set(id, makeFilesTile(id));
-    else makeTile(id);
+    else makeTile(id).setTitle(titles.get(id));
   }
   pruneWidgetStates(new Set(tiles.keys())); // drop state orphaned by closed tabs
   saveLayout();
