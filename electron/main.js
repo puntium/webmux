@@ -220,9 +220,21 @@ function userShow(name) {
 // connection-manager page.
 function show(name) {
   activeName = name && conns.has(name) ? name : null;
-  if (win) win.setTitle(activeName ? `webmux — ${activeName}` : 'webmux');
   layoutViews();
   broadcast();
+}
+
+// The window title carries the fleet summary ("webmux — 2 hosts · 7 tabs");
+// per-connection tab counts come from each page titling itself
+// "webmux — N tabs" (see page-title-updated in createConnection).
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function updateTitle() {
+  if (!win) return;
+  const tabs = [...conns.values()].reduce((n, c) => n + (c.tabCount || 0), 0);
+  win.setTitle(conns.size
+    ? `webmux — ${plural(conns.size, 'host')} · ${plural(tabs, 'tab')}`
+    : 'webmux');
 }
 
 function snapshot() {
@@ -235,6 +247,7 @@ function snapshot() {
 // Push connection states to the client-owned pages (header pills + connect
 // page). Remote pages get nothing.
 function broadcast() {
+  updateTitle(); // any conn change may move the host/tab totals
   for (const view of [headerView, connectView]) {
     if (view) view.webContents.send('conns', snapshot());
   }
@@ -275,9 +288,17 @@ function createConnection(profile) {
     generation: 0, // invalidates poll loops / exit handlers of dead tunnels
     stderrTail: [],
     status: { state: 'connecting' },
+    tabCount: 0, // parsed from the page's self-title, for the window title
   };
 
   const wc = conn.view.webContents;
+  // The served page titles itself "webmux — N tabs"; harvest the count so
+  // the window title can total tabs across hosts. Anything unparseable
+  // (blank page, error page) counts as zero.
+  wc.on('page-title-updated', (_ev, title) => {
+    conn.tabCount = Number(/(\d+) tab/.exec(title)?.[1]) || 0;
+    updateTitle();
+  });
   // Only this connection's tunnel origin may load in-window.
   wc.on('will-navigate', (ev, url) => {
     if (url.startsWith(appUrl(conn))) return;
@@ -576,6 +597,20 @@ function registerIpc() {
   ipcMain.handle('conns:get', () => snapshot());
   ipcMain.handle('conns:show', (_ev, name) => { userShow(name); return { ok: true }; });
   ipcMain.handle('conns:disconnect', (_ev, name) => { disconnect(name); return { ok: true }; });
+
+  // Header-strip actions relayed into the visible host page as DOM events
+  // (the page has no preload bridge, so injection is the only way in — and
+  // this direction, client into page, exposes nothing to the server).
+  const CHROME_EVENTS = { 'new-terminal': 'webmux-new-terminal', 'new-files': 'webmux-new-files' };
+  ipcMain.handle('conns:cmd', (_ev, cmd) => {
+    const event = CHROME_EVENTS[cmd];
+    const conn = activeName && conns.get(activeName);
+    if (!event || !conn || !pageLive(conn)) return { error: 'no active page' };
+    conn.view.webContents
+      .executeJavaScript(`window.dispatchEvent(new Event(${JSON.stringify(event)}))`)
+      .catch(() => {});
+    return { ok: true };
+  });
 }
 
 // ---------------------------------------------------------------------------

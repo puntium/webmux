@@ -14,5 +14,6 @@ if (location.protocol === 'file:') {
     onConns: (cb) => ipcRenderer.on('conns', (_ev, s) => cb(s)),
     showConn: (name) => ipcRenderer.invoke('conns:show', name), // null = connection page
     disconnect: (name) => ipcRenderer.invoke('conns:disconnect', name),
+    chromeCmd: (cmd) => ipcRenderer.invoke('conns:cmd', cmd), // header actions → active host page
   });
 }

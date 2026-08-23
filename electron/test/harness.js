@@ -195,6 +195,10 @@ const connState = async (name) =>
   assert.ok(r.ok);
   snap = await handlers['conns:get']();
   assert.strictEqual(snap.connections.length, 2, 'two connections coexist');
+  assert.strictEqual(FakeBaseWindow.last.title, 'webmux — 2 hosts · 0 tabs',
+    'window title summarizes hosts and tabs');
+  r = await handlers['conns:cmd'](null, 'new-terminal');
+  assert.ok(r.error, 'chrome cmd without a live active page errors');
   assert.strictEqual((await connState('bad')).state, 'failed', 'first connection untouched by second');
   assert.strictEqual((await connState('bad2')).state, 'connecting');
   await sleep(2500);
@@ -234,6 +238,7 @@ const connState = async (name) =>
   r = await handlers['profiles:delete'](null, 'bad2-renamed');
   assert.ok(r.ok);
   assert.strictEqual(readStore().lastProfile, null);
+  assert.strictEqual(FakeBaseWindow.last.title, 'webmux', 'title resets with no hosts');
   console.log('delete/stop ok');
 
   console.log('ALL PASS');

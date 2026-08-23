@@ -21,14 +21,31 @@
     color: var(--text);
     border-bottom: 1px solid var(--border);
     font: 12.5px/1 system-ui, sans-serif;
-    display: flex;
+    /* actions | pills | connections — equal side tracks keep the pills
+       centered in the window, not in the leftover space */
+    display: grid;
+    grid-template-columns: 1fr minmax(0, auto) 1fr;
     align-items: center;
     gap: 6px;
     padding: 0 10px;
     user-select: none;
     overflow: hidden;
   }
-  #pills { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  #actions { justify-self: start; display: flex; gap: 6px; }
+  #actions button {
+    border-radius: 6px;
+    padding: 5px 11px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #newTermBtn { background: var(--accent); border: none; color: #10101a; }
+  #newTermBtn:hover { filter: brightness(1.1); }
+  #newFilesBtn { background: none; border: 1px solid var(--border); color: var(--text); opacity: 0.8; }
+  #newFilesBtn:hover { opacity: 1; border-color: var(--accent); color: var(--accent); }
+  #actions button:disabled { opacity: 0.3; cursor: default; filter: none; }
+  #newFilesBtn:disabled { border-color: var(--border); color: var(--text); }
+  #pills { justify-self: center; display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
   .pill {
     display: inline-flex;
     align-items: center;
@@ -65,8 +82,7 @@
   .pill:hover .x { opacity: 0.55; }
   .x:hover { opacity: 1 !important; color: #f7768e; }
   #connectionsBtn {
-    margin-left: auto;
-    flex: none;
+    justify-self: end;
     background: none;
     border: 1px solid var(--border);
     border-radius: 999px;
@@ -86,6 +102,10 @@
 </style>
 </head>
 <body>
+<div id="actions">
+  <button id="newTermBtn" title="New terminal tab in the focused pane" disabled>+ New terminal</button>
+  <button id="newFilesBtn" title="New file-browser tab in the focused pane" disabled>+ Files</button>
+</div>
 <div id="pills"></div>
 <button id="connectionsBtn" title="Manage connections (⌘⇧O)">Connections</button>
 
@@ -111,6 +131,11 @@
         <button class="x" title="Disconnect" data-x="${esc(c.name)}">✕</button>
       </span>`).join('');
     document.getElementById('connectionsBtn').classList.toggle('active', snap.active === null);
+    // The tab actions target the visible host page; on the connection page
+    // there is nothing to act on.
+    for (const btn of document.querySelectorAll('#actions button')) {
+      btn.disabled = snap.active === null;
+    }
   }
 
   document.getElementById('pills').addEventListener('click', (ev) => {
@@ -120,6 +145,8 @@
     if (pill) webmux.showConn(pill.dataset.show);
   });
   document.getElementById('connectionsBtn').addEventListener('click', () => webmux.showConn(null));
+  document.getElementById('newTermBtn').addEventListener('click', () => webmux.chromeCmd('new-terminal'));
+  document.getElementById('newFilesBtn').addEventListener('click', () => webmux.chromeCmd('new-files'));
 
   webmux.onConns((s) => { snap = s; render(); });
   (async () => { snap = await webmux.getConns(); render(); })();

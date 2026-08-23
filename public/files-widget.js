@@ -18,8 +18,9 @@
    makeFilesTile() — the tile interface it expects is
    { root, openIfNeeded(), fitAndReport(), focus(), term, ws, label() }. */
 
-const statusEl = document.getElementById('status');
-const setStatus = (text) => { statusEl.textContent = text; };
+// Circular with app.js's import of this module, which is fine: both modules
+// only call across the cycle at runtime, never during evaluation.
+import { setStatus } from './app.js';
 
 export const isFilesId = (id) => typeof id === 'string' && id.startsWith('files-');
 

@@ -19,7 +19,6 @@ import {
 } from './files-widget.js';
 
 const layoutEl = document.getElementById('layout');
-const statusEl = document.getElementById('status');
 const tiles = new Map(); // sessionId -> tile
 const MIN_PANE_PX = 110;
 
@@ -131,7 +130,10 @@ function render() {
   // xterm needs its element in the DOM before open(); open any new tiles now.
   for (const tile of tiles.values()) tile.openIfNeeded();
   fitAll();
-  setStatus(`${tiles.size} tab(s)`);
+  // The tab count lives in the title: the browser shows it on the tab, and
+  // the Electron client parses it to total tabs across hosts in the window
+  // title (main.js page-title-updated).
+  document.title = `webmux — ${tiles.size} tab${tiles.size === 1 ? '' : 's'}`;
 }
 
 function buildNode(node) {
@@ -350,8 +352,15 @@ function fitAll() {
   });
 }
 
-function setStatus(text) {
-  statusEl.textContent = text;
+// Transient status messages (clipboard syncs, upload progress, errors) show
+// as a self-dismissing toast. Exported for files-widget.js.
+let toastTimer;
+export function setStatus(text) {
+  const el = document.getElementById('toast');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
 }
 
 function blobToBase64(blob) {
@@ -858,6 +867,10 @@ async function attachExisting() {
 
 document.getElementById('new-session').addEventListener('click', newSession);
 document.getElementById('new-files').addEventListener('click', newFilesSession);
+// The Electron client hides the in-page header and relays its own header-
+// strip buttons as these events (main.js conns:cmd).
+window.addEventListener('webmux-new-terminal', newSession);
+window.addEventListener('webmux-new-files', newFilesSession);
 
 // A file dropped outside a widget's drop zone must not navigate the page
 // away from webmux (the browser default). Real targets handled it earlier
