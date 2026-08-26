@@ -1,6 +1,6 @@
 # webmux — server + macOS Electron client build entry points
 
-.PHONY: deps start stop client-deps client-test client clean
+.PHONY: deps start stop payload client-deps client-test client clean
 
 # ---- server (this machine) ------------------------------------------------
 
@@ -13,6 +13,9 @@ start:           ## run the web server (spawns the pty host on demand)
 stop:            ## shut down the pty host daemon (kills all sessions)
 	npm run stop
 
+payload:         ## build the auto-deploy server payload the client pushes over ssh
+	node deploy/build-payload.js
+
 # ---- macOS Electron client (electron/) -------------------------------------
 
 client-deps:     ## install client dependencies
@@ -21,9 +24,9 @@ client-deps:     ## install client dependencies
 client-test:     ## headless harness: profile store, IPC, tunnel state machine
 	cd electron && node test/harness.js
 
-client: client-test  ## build the unsigned arm64 .app zip (cross-builds from Linux)
+client: client-test payload  ## build the unsigned arm64 .app zip (cross-builds from Linux)
 	cd electron && npx electron-builder --mac zip --arm64
 	@ls -lh electron/dist/*.zip
 
 clean:           ## remove client build output
-	rm -rf electron/dist
+	rm -rf electron/dist electron/payload

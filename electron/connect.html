@@ -126,6 +126,7 @@
     const bits = [p.host];
     if (p.sshPort) bits.push(`-p ${p.sshPort}`);
     bits.push(`→ ${p.remoteSocket || 'auto'}`);
+    if (p.autoDeploy) bits.push('· auto-deploy');
     return bits.join(' ');
   }
 
@@ -178,7 +179,7 @@
     if (editing === null) { $('formHolder').innerHTML = ''; return; }
     const p = profiles.find((x) => x.name === editing) ||
       { name: '', host: '', sshPort: 0, identityFile: '', remoteSocket: '',
-        localPort: 0, extraOptions: '', hasPassword: false };
+        localPort: 0, extraOptions: '', hasPassword: false, autoDeploy: false };
     $('formHolder').innerHTML = `
       <form id="profileForm">
         <div class="row">
@@ -203,6 +204,13 @@
               <input type="checkbox" id="f_clearPassword" style="width:auto"> clear saved
             </label>
           </div>` : ''}
+        </div>
+        <div class="row">
+          <label style="display:flex;align-items:center;gap:7px;margin:0;cursor:pointer;font-size:13px;color:#bbb">
+            <input type="checkbox" id="f_autoDeploy" style="width:auto" ${p.autoDeploy ? 'checked' : ''}>
+            Push &amp; run the server on connect — the host only needs ssh
+            (installs to <code>~/.webmux/dist</code>; sessions survive updates)
+          </label>
         </div>
         <details>
           <summary>Advanced</summary>
@@ -234,6 +242,7 @@
       name: $('f_name').value,
       host: $('f_host').value,
       remoteSocket: $('f_remoteSocket').value.trim(),
+      autoDeploy: Boolean($('f_autoDeploy').checked),
       sshPort: $('f_sshPort').value,
       identityFile: $('f_identityFile').value.trim(),
       localPort: $('f_localPort').value,

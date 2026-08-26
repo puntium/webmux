@@ -70,6 +70,11 @@ disconnects (they live in the pty host), and the client reconnects
 automatically on network drops and laptop wake.
 Design and setup: `docs/electron-client.md`.
 
+A profile can also enable **auto-deploy**: the client pushes a node runtime
+and the server itself to the host over ssh on connect (the host needs
+nothing but sshd) and keeps it up to date — sessions survive server
+updates. See `docs/push-deploy.md`.
+
 ### Pty host lifecycle
 
 `npm start` spawns the named pty host automatically if it isn't running

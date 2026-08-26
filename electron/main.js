@@ -26,6 +26,7 @@ const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const path = require('path');
+const { deploy } = require('./deploy');
 
 // ---------------------------------------------------------------------------
 // Profile store: <userData>/config.json
@@ -43,6 +44,11 @@ const PROFILE_DEFAULTS = {
   // absolute path skips discovery (sshd expands no ~/$VARs, so it must be
   // absolute).
   remoteSocket: '',
+  // Push the server to the host on connect (see electron/deploy.js): the
+  // host needs only sshd — node runtime and webmux payload are streamed up
+  // and kept current under ~/.webmux/dist, and the server is (re)started
+  // there. With this off, a server must already be running on the host.
+  autoDeploy: false,
   localPort: 0, // 0 = auto-pick (then sticky via savedPort)
   extraOptions: '', // extra ssh args, whitespace-separated
   passwordEnc: '', // safeStorage ciphertext, base64; never leaves main
@@ -386,8 +392,58 @@ function startTunnel(conn) {
   setConnStatus(conn, { state: 'connecting', msg: `ssh ${conn.profile.host}` });
 
   const rs = String(conn.profile.remoteSocket || '');
-  if (rs.startsWith('/')) spawnTunnel(conn, gen, env, rs); // explicit path — no discovery
+  if (rs.startsWith('/')) spawnTunnel(conn, gen, env, rs); // explicit path — no discovery, no deploy
+  else if (conn.profile.autoDeploy) runDeploy(conn, gen, env, rs || 'default');
   else discoverSocket(conn, gen, env, rs || 'default');
+}
+
+// Auto-deploy: push the node runtime + server payload to the host if it
+// doesn't have this client's versions yet, (re)start the server there, then
+// tunnel to the advertised socket. Runs on every (re)connect attempt — the
+// already-current case costs two quick ssh round trips (probe + reuse).
+// Cancellation rides the existing machinery: every ssh child parks in
+// conn.discovery (stopTunnel kills it) and each step rechecks the
+// generation.
+async function runDeploy(conn, gen, env, instance) {
+  const ctx = {
+    spawnSsh: (command) => {
+      const child = spawn(
+        'ssh',
+        [...sshBaseArgs(conn.profile), conn.profile.host, command],
+        { stdio: ['pipe', 'pipe', 'pipe'], env },
+      );
+      conn.discovery = child;
+      child.on('exit', () => { if (conn.discovery === child) conn.discovery = null; });
+      return child;
+    },
+    status: (msg) => {
+      if (!quitting && gen === conn.generation) setConnStatus(conn, { state: 'connecting', msg });
+    },
+    stderr: (line) => {
+      conn.stderrTail = conn.stderrTail.concat(line).slice(-8);
+    },
+    isLive: () => !quitting && gen === conn.generation,
+  };
+  try {
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'payload', 'payload.json'), 'utf8'));
+    } catch {
+      throw new Error('no server payload bundled — run `node deploy/build-payload.js` and restart the app');
+    }
+    const result = await deploy(ctx, {
+      payloadTar: path.join(__dirname, 'payload', 'payload.tar.gz'),
+      payloadHash: manifest.hash,
+      instance,
+      nodeCacheDir: path.join(app.getPath('userData'), 'node-cache'),
+    });
+    if (quitting || gen !== conn.generation) return;
+    spawnTunnel(conn, gen, env, result.advert.socket);
+  } catch (err) {
+    if (err.cancelled || quitting || gen !== conn.generation) return;
+    conn.stderrTail = conn.stderrTail.concat(String(err.message || err)).slice(-8);
+    onTunnelDown(conn, gen);
+  }
 }
 
 // Read the server's advertised socket path over ssh before opening the
@@ -523,6 +579,10 @@ function registerIpc() {
     // command, so it must stay shell-inert.
     if (p.remoteSocket && !p.remoteSocket.startsWith('/') && !/^[A-Za-z0-9._-]+$/.test(p.remoteSocket)) {
       return { error: 'server socket must be blank (auto), an absolute path, or an instance name (letters, digits, . _ -)' };
+    }
+    p.autoDeploy = Boolean(p.autoDeploy);
+    if (p.autoDeploy && p.remoteSocket.startsWith('/')) {
+      return { error: 'auto-deploy finds the socket itself — leave server socket blank (or set an instance name)' };
     }
     p.sshPort = Number(p.sshPort) || 0;
     p.localPort = Number(p.localPort) || 0;

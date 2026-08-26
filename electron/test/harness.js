@@ -109,6 +109,12 @@ const connState = async (name) =>
   assert.ok(r.error, 'rejects duplicate name');
   r = await handlers['profiles:save'](null, { name: 'inj', host: 'x', remoteSocket: 'name; rm -rf /' });
   assert.ok(r.error, 'rejects shell metacharacters in instance name');
+  r = await handlers['profiles:save'](null, { name: 'ad', host: 'x', autoDeploy: true, remoteSocket: '/abs/path.sock' });
+  assert.ok(r.error, 'rejects auto-deploy combined with an absolute socket path');
+  r = await handlers['profiles:save'](null, { name: 'ad', host: 'x', autoDeploy: true, remoteSocket: 'inst2' });
+  assert.ok(r.ok, 'accepts auto-deploy with an instance name');
+  assert.strictEqual(readStore().profiles.find((p) => p.name === 'ad').autoDeploy, true, 'persists autoDeploy');
+  await handlers['profiles:delete'](null, 'ad');
   assert.strictEqual(readStore().profiles.length, 2);
   assert.strictEqual(readStore().profiles[1].sshPort, 2222, 'coerces ports to numbers');
   assert.strictEqual(readStore().profiles[1].remoteSocket, '/run/user/1234/webmux/default.http.sock', 'trims socket path');
