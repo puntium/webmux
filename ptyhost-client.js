@@ -11,6 +11,15 @@ const { spawn } = require('child_process');
 
 const DEFAULT_NAME = 'default';
 
+// Version of the pty-host control protocol (the newline-JSON exchange above
+// this comment block). Bump it on incompatible changes: the version is baked
+// into the socket name (for versions > 1), so a newly deployed server that
+// speaks a newer protocol spawns a fresh pty host beside an old one instead
+// of corrupting it — old sessions stay alive on the old host. Version 1 keeps
+// the historical unversioned socket name for compatibility with running
+// hosts.
+const PROTOCOL = 1;
+
 // Sockets live under the user's runtime dir (private, survives independent
 // of any particular checkout), one socket per named host.
 function runDir() {
@@ -25,7 +34,8 @@ function socketPath(name) {
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
     throw new Error(`invalid pty host name '${name}' (allowed: letters, digits, . _ -)`);
   }
-  return path.join(runDir(), `${name}.sock`);
+  const suffix = PROTOCOL > 1 ? `.v${PROTOCOL}` : '';
+  return path.join(runDir(), `${name}${suffix}.sock`);
 }
 
 function logPath(name) {
@@ -95,4 +105,4 @@ async function ensureHost(name) {
   throw new Error(`pty host '${name}' failed to start — see ${logPath(name)}`);
 }
 
-module.exports = { DEFAULT_NAME, runDir, socketPath, logPath, readLines, connect, control, ensureHost };
+module.exports = { DEFAULT_NAME, PROTOCOL, runDir, socketPath, logPath, readLines, connect, control, ensureHost };

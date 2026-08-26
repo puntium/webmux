@@ -62,13 +62,15 @@ Optional config lives in `config.yaml` (gitignored; copy
 `electron/` holds the native macOS client: an Electron shell that forwards a
 local port to the server's remote unix socket over a supervised SSH tunnel
 (`ssh -L 127.0.0.1:<port>:<remote socket> host`) — no exposed port anywhere;
-your SSH key is the front door. The socket path is discovered automatically
-(the server advertises it in `~/.webmux/`), so a profile is just a name and
-an ssh host. Several hosts can be connected at once — each gets a pill in
-the client's header strip (⌘1…⌘9 switch between them). Sessions survive
-disconnects (they live in the pty host), and the client reconnects
+your SSH key is the front door. Connecting **is** deploying: the client
+pushes a node runtime and the server itself to the host over ssh (the host
+needs nothing but sshd) and keeps it up to date, so a profile is just a
+name and an ssh host — there is no server to install or start manually.
+Several hosts can be connected at once — each gets a pill in the client's
+header strip (⌘1…⌘9 switch between them). Sessions survive disconnects and
+server updates alike (they live in the pty host), and the client reconnects
 automatically on network drops and laptop wake.
-Design and setup: `docs/electron-client.md`.
+Design and setup: `docs/electron-client.md`; deploy flow: `docs/push-deploy.md`.
 
 ### Pty host lifecycle
 

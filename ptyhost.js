@@ -31,7 +31,12 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const pty = require('node-pty');
+// Deployed payloads (see deploy/build-payload.js) ship the prebuilt
+// multi-arch fork so no compiler is needed on the target host; a dev
+// checkout uses plain node-pty compiled by npm install. Same API either way.
+let pty;
+try { pty = require('@homebridge/node-pty-prebuilt-multiarch'); }
+catch { pty = require('node-pty'); }
 const { Terminal } = require('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize');
 const { DEFAULT_NAME, socketPath, control } = require('./ptyhost-client');
