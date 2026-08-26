@@ -26,8 +26,8 @@ const { DEFAULT_NAME, PROTOCOL, runDir, socketPath, readLines, control, ensureHo
 // Deployed payloads carry a PAYLOAD_HASH file stamped by deploy/build-payload.js;
 // the Electron client compares it against the payload it ships to decide
 // whether to push an update. A dev checkout has no such file and reports
-// 'dev', which never matches — so an auto-deploy profile pointed at a dev
-// server will replace it (into ~/.webmux/dist, the checkout is untouched).
+// 'dev', which never matches — so the client will replace a checkout-run
+// server on its next connect (into ~/.webmux/dist; the checkout is untouched).
 let PAYLOAD_HASH = 'dev';
 try { PAYLOAD_HASH = fs.readFileSync(path.join(__dirname, 'PAYLOAD_HASH'), 'utf8').trim() || 'dev'; } catch { /* dev checkout */ }
 
@@ -510,17 +510,14 @@ async function main() {
 
   server.listen(HTTP_SOCK, () => {
     fs.chmodSync(HTTP_SOCK, 0o600); // dir is 0700 already; belt and braces
-    // Advertise the socket path at a fixed home-relative location so the
-    // Electron client can auto-discover it (`ssh host cat
-    // .webmux/<name>.http.sock.path` — sshd runs remote commands with the
-    // home dir as cwd) instead of knowing the uid behind $XDG_RUNTIME_DIR.
+    // Advertise at a fixed home-relative location: the socket path embeds
+    // the uid behind $XDG_RUNTIME_DIR, which the client can't compute, so
+    // the deploy flow reads it from here instead.
     const advertDir = path.join(HOME, '.webmux');
     fs.mkdirSync(advertDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(advertDir, `${HOST_NAME}.http.sock.path`), HTTP_SOCK + '\n', { mode: 0o600 });
-    // Richer JSON advert for the auto-deploy flow (deploy/remote-start.js and
-    // the Electron client's push logic): which payload is running, as which
-    // pid, speaking which pty-host protocol. The legacy .path file stays for
-    // plain discovery-only profiles.
+    // Advert for the deploy flow (deploy/remote-start.js and the Electron
+    // client's push logic): which payload is running, as which pid, speaking
+    // which pty-host protocol, listening where.
     fs.writeFileSync(path.join(advertDir, `${HOST_NAME}.json`), JSON.stringify({
       socket: HTTP_SOCK,
       payloadHash: PAYLOAD_HASH,

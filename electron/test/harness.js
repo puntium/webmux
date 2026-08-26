@@ -86,9 +86,10 @@ const connState = async (name) =>
   let r = await handlers['profiles:list']();
   assert.strictEqual(r.profiles.length, 1, 'migrated one profile');
   assert.strictEqual(r.profiles[0].name, 'me@oldbox');
-  // pre-unix-socket remotePort is dropped; blank remoteSocket = auto-discover
+  // pre-unix-socket remotePort is dropped; blank instance = 'default'
   assert.ok(!('remotePort' in r.profiles[0]), 'legacy remotePort dropped');
-  assert.strictEqual(r.profiles[0].remoteSocket, '', 'defaults to auto-discovery');
+  assert.ok(!('remoteSocket' in r.profiles[0]), 'legacy remoteSocket dropped');
+  assert.strictEqual(r.profiles[0].instance, '', 'defaults to the default instance');
   assert.strictEqual(r.profiles[0].extraOptions, '-o ProxyJump=bastion');
   assert.strictEqual(r.lastProfile, 'me@oldbox');
   console.log('migration ok');
@@ -103,21 +104,17 @@ const connState = async (name) =>
   // -- save / validation ------------------------------------------------
   r = await handlers['profiles:save'](null, { name: '', host: 'x' });
   assert.ok(r.error, 'rejects empty name');
-  r = await handlers['profiles:save'](null, { name: 'dev', host: 'me@devbox', remoteSocket: '  /run/user/1234/webmux/default.http.sock ', sshPort: '2222' });
+  r = await handlers['profiles:save'](null, { name: 'dev', host: 'me@devbox', instance: '  work ', sshPort: '2222' });
   assert.ok(r.ok);
   r = await handlers['profiles:save'](null, { name: 'me@oldbox', host: 'y' });
   assert.ok(r.error, 'rejects duplicate name');
-  r = await handlers['profiles:save'](null, { name: 'inj', host: 'x', remoteSocket: 'name; rm -rf /' });
+  r = await handlers['profiles:save'](null, { name: 'inj', host: 'x', instance: 'name; rm -rf /' });
   assert.ok(r.error, 'rejects shell metacharacters in instance name');
-  r = await handlers['profiles:save'](null, { name: 'ad', host: 'x', autoDeploy: true, remoteSocket: '/abs/path.sock' });
-  assert.ok(r.error, 'rejects auto-deploy combined with an absolute socket path');
-  r = await handlers['profiles:save'](null, { name: 'ad', host: 'x', autoDeploy: true, remoteSocket: 'inst2' });
-  assert.ok(r.ok, 'accepts auto-deploy with an instance name');
-  assert.strictEqual(readStore().profiles.find((p) => p.name === 'ad').autoDeploy, true, 'persists autoDeploy');
-  await handlers['profiles:delete'](null, 'ad');
+  r = await handlers['profiles:save'](null, { name: 'inj', host: 'x', instance: '/abs/path.sock' });
+  assert.ok(r.error, 'rejects a path as an instance name');
   assert.strictEqual(readStore().profiles.length, 2);
   assert.strictEqual(readStore().profiles[1].sshPort, 2222, 'coerces ports to numbers');
-  assert.strictEqual(readStore().profiles[1].remoteSocket, '/run/user/1234/webmux/default.http.sock', 'trims socket path');
+  assert.strictEqual(readStore().profiles[1].instance, 'work', 'trims instance name');
   console.log('save/validation ok');
 
   // -- rename -----------------------------------------------------------
@@ -125,8 +122,8 @@ const connState = async (name) =>
   assert.ok(r.ok);
   assert.ok(readStore().profiles.some((p) => p.name === 'devbox'), 'renamed');
   assert.ok(!readStore().profiles.some((p) => p.name === 'dev'), 'old name gone');
-  assert.strictEqual(readStore().profiles.find((p) => p.name === 'devbox').remoteSocket,
-    '', 'blank socket stays blank (auto-discovery)');
+  assert.strictEqual(readStore().profiles.find((p) => p.name === 'devbox').instance,
+    '', 'blank instance stays blank (default)');
   console.log('rename ok');
 
   // -- passwords --------------------------------------------------------

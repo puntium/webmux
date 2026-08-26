@@ -42,17 +42,20 @@ Design decisions, and why:
   OpenSSH forwards local TCP to a remote unix socket natively, so the client
   side is just the `-L` argument. TLS, Basic auth, and bind-address config
   are gone; there is no browser/TCP deployment mode.
-- **The remote socket path is auto-discovered.** sshd resolves the
-  forwarded path literally (no `~`/`$VAR` expansion), and the default
-  location embeds the remote uid (`/run/user/<uid>/…`), which the client
-  can't know. So the server advertises its socket path in
-  `~/.webmux/<name>.http.sock.path`, and before each tunnel attempt the
-  client runs `ssh <host> cat .webmux/<name>.http.sock.path` (remote
-  commands get the home dir as cwd) and forwards to whatever it reads —
-  re-run on every retry, so a server restarted onto a different path heals
-  automatically. The profile's socket field is normally blank (= discover
-  instance `default`); a bare name discovers that named instance, an
-  absolute path skips discovery entirely.
+- **Connecting IS deploying** (since the push-deploy change — see
+  `docs/push-deploy.md`): before each tunnel attempt the client makes sure
+  the host runs the server version it ships (pushing a node runtime and the
+  payload over ssh when needed, restarting the server when it's outdated —
+  sessions live in the pty host and survive that), then reads the socket
+  path from the advert (`~/.webmux/<name>.json`) the starter prints. sshd
+  resolves the forwarded path literally (no `~`/`$VAR` expansion) and the
+  default location embeds the remote uid (`/run/user/<uid>/…`), which the
+  client can't know — hence the advert rather than a computed path. This
+  runs on every retry, so a server restarted onto a different path heals
+  automatically. There is no separate "server already running" connect
+  mode. The profile's instance field (blank = `default`) selects which
+  named instance to run; distinct instances have independent servers and
+  session sets.
 - **Fixed local port — across tunnel respawns and app runs.** app.js
   already reconnects its WebSockets with backoff and repaints from ptyhost
   snapshots. If the tunnel comes back on the same port, the loaded page
@@ -78,9 +81,10 @@ Design decisions, and why:
 <ptyhost>.http.sock` by default, `socket:` in config to override), chmods it
 0600, recovers a stale socket file left by a dead server (probe → remove →
 relisten, same dance as ptyhost), and removes it on SIGINT/SIGTERM. On
-listen it writes the advertisement file `~/.webmux/<name>.http.sock.path`
-(0600 in a 0700 dir) that client discovery reads — this also tracks a
-`socket:` override automatically. No TCP, TLS, or auth code remains.
+listen it writes the JSON advert `~/.webmux/<name>.json` (0600 in a 0700
+dir; socket path, payload hash, protocol, pid) that the deploy flow reads —
+this also tracks a `socket:` override automatically. No TCP, TLS, or auth
+code remains.
 
 ### 2. Electron app: `electron/` (done)
 
@@ -89,17 +93,17 @@ A self-contained npm package so the server install never pulls Electron.
 - `main.js` — tunnel supervision, profile store, window, menu.
   - **Profiles** at `<userData>/config.json` (`~/Library/Application
     Support/webmux/config.json` on macOS): `{ profiles: [{ name, host,
-    sshPort, identityFile, remoteSocket, localPort, extraOptions,
+    sshPort, identityFile, instance, localPort, extraOptions,
     passwordEnc, savedPort }], lastProfile }`. `savedPort` is main's
     bookkeeping (the persisted auto-picked local port, see below), carried
     through edits rather than shown in the form. The pre-profiles single-host shape is
-    migrated on first load, and the pre-unix-socket `remotePort` field is
-    dropped (such profiles fall back to auto-discovery). `remoteSocket` is
-    validated on save: blank, an absolute path, or a `[A-Za-z0-9._-]+`
-    instance name — the name is interpolated into the remote discovery
-    command, so it must stay shell-inert. Startup always lands on the
-    connection manager — connecting is the user's call; ⌘⇧O reopens it
-    anytime.
+    migrated on first load; the pre-unix-socket `remotePort` field is
+    dropped, and a legacy bare-name `remoteSocket` becomes the `instance`
+    field (an absolute-path one falls back to `default`). `instance` is
+    validated on save: blank or `[A-Za-z0-9._-]+` — it is interpolated
+    into remote shell commands, so it must stay shell-inert. Startup always
+    lands on the connection manager — connecting is the user's call; ⌘⇧O
+    reopens it anytime.
   - **Passwords** (optional per profile): stored only as `safeStorage`
     ciphertext (macOS Keychain-backed) and never sent to the renderer —
     the bridge sees a `hasPassword` flag. At spawn time the password is
@@ -151,11 +155,12 @@ A self-contained npm package so the server install never pulls Electron.
 
 ### 3. Remote setup
 
-None needed — `npm start` on the box listens on
-`$XDG_RUNTIME_DIR/webmux/default.http.sock` and advertises that path in
-`~/.webmux/default.http.sock.path`, which the client discovers on its own.
-`config.yaml` can override the path (`socket:`) or the pty host name
-(`ptyhost:`); discovery follows either.
+None — the host needs nothing but sshd. Connecting pushes a node runtime
+and the server payload to `~/.webmux/dist` and starts the server (see
+`docs/push-deploy.md`); the running server advertises its socket in
+`~/.webmux/<instance>.json`. (`npm start` from a checkout still works for
+local development of the server itself, but the client will replace such a
+server with the deployed payload on its next connect.)
 
 ## Build & install
 

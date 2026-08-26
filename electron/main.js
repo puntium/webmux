@@ -7,6 +7,11 @@
 // header lives outside the served pages on purpose — a remote server must
 // never see the other profiles or drive switching.
 //
+// Connecting IS deploying (electron/deploy.js): the client pushes a node
+// runtime and the server payload to the host over ssh and (re)starts the
+// server there — a host needs nothing but sshd, and there is no separate
+// "server already running" mode.
+//
 // Per connection, the whole app rides one forward: the page, /api/*, and /ws
 // all go to http://127.0.0.1:<localPort>, which ssh forwards to the server's
 // unix socket on the remote box ($XDG_RUNTIME_DIR/webmux/<name>.http.sock —
@@ -37,18 +42,12 @@ const PROFILE_DEFAULTS = {
   host: '', // anything ssh accepts, ~/.ssh/config aliases included
   sshPort: 0, // 0 = ssh default (22 / per ssh_config)
   identityFile: '', // optional -i path
-  // Where server.js listens on the remote box. Blank (the default) means
-  // auto-discover: the server advertises its socket path in
-  // ~/.webmux/<name>.http.sock.path, which the client reads over ssh before
-  // opening the tunnel. A bare name discovers that named instance; an
-  // absolute path skips discovery (sshd expands no ~/$VARs, so it must be
-  // absolute).
-  remoteSocket: '',
-  // Push the server to the host on connect (see electron/deploy.js): the
-  // host needs only sshd — node runtime and webmux payload are streamed up
-  // and kept current under ~/.webmux/dist, and the server is (re)started
-  // there. With this off, a server must already be running on the host.
-  autoDeploy: false,
+  // Which webmux instance to run on the host (blank = 'default'). Connecting
+  // always deploys: the client pushes a node runtime + the server payload
+  // over ssh (kept current under ~/.webmux/dist) and (re)starts the server
+  // there — the host needs nothing but sshd. Distinct instance names get
+  // independent servers and session sets on the same host.
+  instance: '',
   localPort: 0, // 0 = auto-pick (then sticky via savedPort)
   extraOptions: '', // extra ssh args, whitespace-separated
   passwordEnc: '', // safeStorage ciphertext, base64; never leaves main
@@ -72,9 +71,15 @@ function loadStore() {
   }
   if (raw && Array.isArray(raw.profiles)) {
     store = {
-      // Drop the pre-unix-socket remotePort field; such profiles fall back
-      // to the default remoteSocket and need a one-time edit if it differs.
-      profiles: raw.profiles.map(({ remotePort, ...p }) => ({ ...PROFILE_DEFAULTS, ...p })),
+      // Migrate older per-profile fields: remotePort (pre-unix-socket) is
+      // dropped; a bare-name remoteSocket (pre-deploy-only discovery)
+      // becomes the instance name, an absolute-path one has no deploy
+      // equivalent and falls back to 'default'; autoDeploy is implied now.
+      profiles: raw.profiles.map(({ remotePort, remoteSocket, autoDeploy, ...p }) => ({
+        ...PROFILE_DEFAULTS,
+        instance: remoteSocket && !String(remoteSocket).startsWith('/') ? String(remoteSocket) : '',
+        ...p,
+      })),
       lastProfile: raw.lastProfile || null,
     };
   } else if (raw && raw.host) {
@@ -113,7 +118,7 @@ function ensureAskpass() {
   fs.writeFileSync(askpassFile(), '#!/bin/sh\nprintf \'%s\' "$WEBMUX_SSH_PASSWORD"\n', { mode: 0o700 });
 }
 
-// Options shared by the tunnel and the discovery run: auth, endpoint, and
+// Options shared by the tunnel and the deploy steps: auth, endpoint, and
 // timeouts, but no forwarding.
 function sshBaseArgs(p) {
   return [
@@ -286,7 +291,7 @@ function createConnection(profile) {
     view: makeView(),
     localPort: 0,
     tunnel: null, // ssh tunnel child process, or null
-    discovery: null, // ssh socket-discovery child process, or null
+    discovery: null, // current deploy-step ssh child process, or null
     hadConnection: false, // this connect-cycle reached 'connected' at least once
     reveal: false, // switch to this view when the server first answers
     retryDelay: 0, // ms; 0 → immediate
@@ -391,19 +396,16 @@ function startTunnel(conn) {
 
   setConnStatus(conn, { state: 'connecting', msg: `ssh ${conn.profile.host}` });
 
-  const rs = String(conn.profile.remoteSocket || '');
-  if (rs.startsWith('/')) spawnTunnel(conn, gen, env, rs); // explicit path — no discovery, no deploy
-  else if (conn.profile.autoDeploy) runDeploy(conn, gen, env, rs || 'default');
-  else discoverSocket(conn, gen, env, rs || 'default');
+  runDeploy(conn, gen, env, String(conn.profile.instance || '') || 'default');
 }
 
-// Auto-deploy: push the node runtime + server payload to the host if it
-// doesn't have this client's versions yet, (re)start the server there, then
-// tunnel to the advertised socket. Runs on every (re)connect attempt — the
-// already-current case costs two quick ssh round trips (probe + reuse).
-// Cancellation rides the existing machinery: every ssh child parks in
-// conn.discovery (stopTunnel kills it) and each step rechecks the
-// generation.
+// Connecting IS deploying: push the node runtime + server payload to the
+// host if it doesn't have this client's versions yet, (re)start the server
+// there, then tunnel to the advertised socket. Runs on every (re)connect
+// attempt — the already-current case costs two quick ssh round trips
+// (probe + reuse). Cancellation rides the existing machinery: every ssh
+// child parks in conn.discovery (stopTunnel kills it) and each step
+// rechecks the generation.
 async function runDeploy(conn, gen, env, instance) {
   const ctx = {
     spawnSsh: (command) => {
@@ -444,42 +446,6 @@ async function runDeploy(conn, gen, env, instance) {
     conn.stderrTail = conn.stderrTail.concat(String(err.message || err)).slice(-8);
     onTunnelDown(conn, gen);
   }
-}
-
-// Read the server's advertised socket path over ssh before opening the
-// tunnel: `cat .webmux/<name>.http.sock.path`, relying on sshd giving remote
-// commands the home dir as cwd. Runs on every (re)connect attempt, so a
-// server restarted onto a different path just works.
-function discoverSocket(conn, gen, env, name) {
-  const child = spawn(
-    'ssh',
-    [...sshBaseArgs(conn.profile), conn.profile.host, `cat .webmux/${name}.http.sock.path`],
-    { stdio: ['ignore', 'pipe', 'pipe'], env },
-  );
-  conn.discovery = child;
-  let out = '';
-
-  child.stdout.on('data', (chunk) => { out += chunk; });
-  child.stderr.on('data', (chunk) => {
-    conn.stderrTail = conn.stderrTail.concat(String(chunk).split('\n')).filter(Boolean).slice(-8);
-  });
-
-  child.on('error', (err) => {
-    // spawn failure (no ssh binary) — 'exit' won't always follow
-    conn.stderrTail.push(String(err.message || err));
-    if (conn.discovery === child) { conn.discovery = null; onTunnelDown(conn, gen); }
-  });
-
-  child.on('exit', (code, signal) => {
-    if (conn.discovery === child) conn.discovery = null;
-    if (quitting || gen !== conn.generation) return;
-    // Take the last absolute-path line so shell-profile noise on stdout
-    // can't break discovery.
-    const sockPath = out.split('\n').map((s) => s.trim()).filter((s) => s.startsWith('/')).pop();
-    if (code === 0 && sockPath) return spawnTunnel(conn, gen, env, sockPath);
-    conn.stderrTail.push(`could not read .webmux/${name}.http.sock.path — is webmux running on the host?`);
-    onTunnelDown(conn, gen, code ?? signal);
-  });
 }
 
 function spawnTunnel(conn, gen, env, remoteSock) {
@@ -574,15 +540,11 @@ function registerIpc() {
     const p = { ...PROFILE_DEFAULTS, ...fields };
     p.name = String(p.name || '').trim();
     p.host = String(p.host || '').trim();
-    p.remoteSocket = String(p.remoteSocket || '').trim();
-    // A bare instance name is interpolated into the remote discovery
-    // command, so it must stay shell-inert.
-    if (p.remoteSocket && !p.remoteSocket.startsWith('/') && !/^[A-Za-z0-9._-]+$/.test(p.remoteSocket)) {
-      return { error: 'server socket must be blank (auto), an absolute path, or an instance name (letters, digits, . _ -)' };
-    }
-    p.autoDeploy = Boolean(p.autoDeploy);
-    if (p.autoDeploy && p.remoteSocket.startsWith('/')) {
-      return { error: 'auto-deploy finds the socket itself — leave server socket blank (or set an instance name)' };
+    p.instance = String(p.instance || '').trim();
+    // The instance name is interpolated into remote shell commands, so it
+    // must stay shell-inert.
+    if (p.instance && !/^[A-Za-z0-9._-]+$/.test(p.instance)) {
+      return { error: 'instance name must be blank (default) or letters, digits, . _ -' };
     }
     p.sshPort = Number(p.sshPort) || 0;
     p.localPort = Number(p.localPort) || 0;

@@ -100,13 +100,14 @@
   <div class="status-detail" id="statusDetail"></div>
 
   <p class="hint">
+    A host needs nothing but ssh: connecting pushes the webmux server (and a
+    node runtime, first time) to <code>~/.webmux/dist</code> on the host and
+    starts it — updates are pushed the same way, and sessions survive them.
     Connect to several hosts at once — each connection gets a pill in the
     header bar above (⌘1…⌘9 switch, ⌘⇧O returns here). Key auth needs no
     prompt (use ssh-agent for passphrases); or save a password per profile —
     it is stored encrypted via the macOS Keychain and fed to ssh through an
-    askpass helper. The server's unix socket is found automatically (it
-    advertises its path in <code>~/.webmux/</code> on the host).
-    ⌘⇧R reconnects the current host.
+    askpass helper. ⌘⇧R reconnects the current host.
   </p>
 </div>
 
@@ -125,8 +126,7 @@
   function profileDetail(p) {
     const bits = [p.host];
     if (p.sshPort) bits.push(`-p ${p.sshPort}`);
-    bits.push(`→ ${p.remoteSocket || 'auto'}`);
-    if (p.autoDeploy) bits.push('· auto-deploy');
+    if (p.instance) bits.push(`→ ${p.instance}`);
     return bits.join(' ');
   }
 
@@ -178,8 +178,8 @@
   function renderForm() {
     if (editing === null) { $('formHolder').innerHTML = ''; return; }
     const p = profiles.find((x) => x.name === editing) ||
-      { name: '', host: '', sshPort: 0, identityFile: '', remoteSocket: '',
-        localPort: 0, extraOptions: '', hasPassword: false, autoDeploy: false };
+      { name: '', host: '', sshPort: 0, identityFile: '', instance: '',
+        localPort: 0, extraOptions: '', hasPassword: false };
     $('formHolder').innerHTML = `
       <form id="profileForm">
         <div class="row">
@@ -205,18 +205,11 @@
             </label>
           </div>` : ''}
         </div>
-        <div class="row">
-          <label style="display:flex;align-items:center;gap:7px;margin:0;cursor:pointer;font-size:13px;color:#bbb">
-            <input type="checkbox" id="f_autoDeploy" style="width:auto" ${p.autoDeploy ? 'checked' : ''}>
-            Push &amp; run the server on connect — the host only needs ssh
-            (installs to <code>~/.webmux/dist</code>; sessions survive updates)
-          </label>
-        </div>
         <details>
           <summary>Advanced</summary>
           <div class="row">
-            <div class="field"><label>Server socket (blank = auto-discover)</label>
-              <input id="f_remoteSocket" value="${esc(p.remoteSocket)}" placeholder="auto — or instance name, or /abs/path.sock"></div>
+            <div class="field"><label>Instance name (blank = default — separate instances have separate sessions)</label>
+              <input id="f_instance" value="${esc(p.instance)}" placeholder="default"></div>
           </div>
           <div class="row">
             <div class="field narrow"><label>Local port (0 = auto)</label>
@@ -241,8 +234,7 @@
     const profile = {
       name: $('f_name').value,
       host: $('f_host').value,
-      remoteSocket: $('f_remoteSocket').value.trim(),
-      autoDeploy: Boolean($('f_autoDeploy').checked),
+      instance: $('f_instance').value.trim(),
       sshPort: $('f_sshPort').value,
       identityFile: $('f_identityFile').value.trim(),
       localPort: $('f_localPort').value,

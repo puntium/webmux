@@ -1,6 +1,6 @@
 // Auto-deploy: make a host that has nothing but sshd run webmux.
 //
-// On connect (for profiles with autoDeploy), before the tunnel opens:
+// On every connect, before the tunnel opens:
 //   1. probe   — one ssh round trip: uname, libc flavor, which node runtimes
 //                and payloads ~/.webmux/dist already holds
 //   2. runtime — if the right node build is missing remotely, download the
@@ -331,7 +331,7 @@ async function deploy(ctx, { payloadTar, payloadHash, instance, nodeCacheDir }) 
   const platform = resolvePlatform(probe);
   if (!platform) {
     throw new Error(`unsupported host platform '${probe.os} ${probe.cpu}${probe.musl ? ' (musl)' : ''}'`
-      + ` — auto-deploy supports: ${supportedSummary()}`);
+      + ` — supported targets: ${supportedSummary()}`);
   }
 
   if (!probe.nodeDirs.includes(platform.nodeDirName)) {

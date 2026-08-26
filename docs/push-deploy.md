@@ -1,10 +1,13 @@
-# Auto-deploy: push the server over ssh on connect
+# Push-deploy: connecting IS deploying
 
-A profile with **auto-deploy** enabled turns any host with nothing but sshd
-into a webmux host: on connect, the Electron client pushes a node runtime and
-the server payload up over ssh, starts the server there, and tunnels to it.
-No node, no compiler, no git checkout needed on the remote — just a
-POSIX-ish shell, `tar`, `gzip`, and coreutils.
+Connecting to a host always deploys — it is the only connect mode. Any host
+with nothing but sshd is a webmux host: on connect, the Electron client
+pushes a node runtime and the server payload up over ssh (when the host
+doesn't already have the right versions), starts the server there, and
+tunnels to it. No node, no compiler, no git checkout needed on the remote —
+just a POSIX-ish shell, `tar`, `gzip`, and coreutils. A profile is a name,
+an ssh host, and optionally an instance name (distinct instances get
+independent servers and session sets on the same host).
 
 ## Connect flow (electron/deploy.js)
 
@@ -34,7 +37,6 @@ Disconnect kills whatever step is in flight.
 ```
 ~/.webmux/
   <instance>.json             advert: { socket, payloadHash, protocol, pid, startedAt }
-  <instance>.http.sock.path   legacy advert (discovery-only profiles)
   <instance>.server.log       server stdout/stderr
   dist/
     node/node-v<V>-<arch>/bin/node
