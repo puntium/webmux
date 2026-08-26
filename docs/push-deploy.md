@@ -55,7 +55,11 @@ node deploy/build-payload.js       # → electron/payload/payload.tar.gz + paylo
 Stages the server sources plus fresh production `node_modules`, with
 `node-pty` swapped for `@homebridge/node-pty-prebuilt-multiarch` (prebuilt
 `.node` binaries for linux x64/arm64/arm/ia32 — `ptyhost.js` prefers it when
-present, so a dev checkout still uses plain node-pty). The payload hash is a
+present, so a dev checkout still uses plain node-pty). No frontend: the UI
+(`electron/ui/` + the @xterm browser packages) ships inside the Electron
+client and is served locally on the `webmux://` scheme — the payload is only
+what must run on the host (server, pty host + prebuilds, `@xterm/headless`
+for session state, shims). The payload hash is a
 deterministic content hash, stamped into `PAYLOAD_HASH`; the running server
 reports it back through its advert, which is how the client decides whether
 to re-push. One payload serves all architectures.
@@ -87,5 +91,6 @@ detection degrades gracefully (image pastes fall back to path-typing), and
   one instead of corrupting it — old sessions keep running on the old host
   (reachable by an old client) rather than breaking.
 - The client↔server HTTP/WS protocol needs no versioning here: the client
-  loads the web frontend *served by the payload it just pushed*, so the two
-  ends always come from the same build.
+  ships the frontend and *pushes the server payload built from the same
+  tree* (hash-checked on every connect), so the two ends always come from
+  the same build.

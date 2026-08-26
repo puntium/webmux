@@ -36,12 +36,13 @@ const MANIFEST = path.join(OUT_DIR, 'payload.json');
 const PTY_PREBUILT = '@homebridge/node-pty-prebuilt-multiarch';
 const PTY_PREBUILT_VERSION = '^0.14.1';
 
-// Source files/dirs copied verbatim from the repo into the payload.
+// Source files/dirs copied verbatim from the repo into the payload. No
+// frontend here: the UI (electron/ui + the @xterm browser packages) ships
+// inside the Electron client and never crosses the wire.
 const SOURCES = [
   'server.js',
   'ptyhost.js',
   'ptyhost-client.js',
-  'public',
   'shims',
   'deploy/remote-start.js',
 ];

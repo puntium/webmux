@@ -1,10 +1,12 @@
 # Electron client over SSH
 
 The native macOS client for webmux — and the only way to connect from
-another machine: an Electron shell that reaches the web server through an
-SSH tunnel to its unix socket. server.js stays the remote API surface (file
+another machine: an Electron shell that reaches the server through an SSH
+tunnel to its unix socket. server.js stays the remote API surface (file
 browser, paste/clipboard shims, future endpoints); ptyhost stays the session
-owner; the frontend is unchanged.
+owner; the frontend (`electron/ui/` + the @xterm browser packages) ships
+inside the client and is served locally on the `webmux://` scheme — only
+API and WebSocket traffic crosses the wire.
 
 ## Topology
 
@@ -14,12 +16,13 @@ Electron main process (macOS)
        ├─ header strip (header.html, client-owned): one pill per connection
        └─ per connected profile:
             ├─ spawns/supervises: ssh -N -L 127.0.0.1:<local>:<remote socket> <host>
-            └─ WebContentsView → http://127.0.0.1:<local>
-                                     │  (page, /api/*, /ws all ride the tunnel)
-                 (remote) server.js — plain http on a unix socket
-                                      ($XDG_RUNTIME_DIR/webmux/<name>.http.sock,
-                                       0600 in a 0700 dir)
-                                     └─ ptyhost daemon (unchanged)
+            └─ WebContentsView → webmux://<host-slug>/?port=<local>
+                 │  (page + assets served from the app bundle)
+                 └─ /api/* and /ws → http://127.0.0.1:<local>, riding the tunnel
+                      (remote) server.js — plain http on a unix socket
+                                           ($XDG_RUNTIME_DIR/webmux/<name>.http.sock,
+                                            0600 in a 0700 dir)
+                                          └─ ptyhost daemon (unchanged)
 ```
 
 Several profiles can be connected at once; the header pills (or ⌘1…⌘9)
@@ -32,9 +35,20 @@ switching.
 Design decisions, and why:
 
 - **Tunnel the whole HTTP server; don't talk to ptyhost directly.** Keeps
-  server.js as the extension point for remote features and requires zero
-  frontend or protocol changes. The machine-local endpoints (fs browser,
-  paste slot, /proc foreground detection) keep working as-is.
+  server.js as the extension point for remote features. The machine-local
+  endpoints (fs browser, paste slot, /proc foreground detection) need a
+  process on the host, and the thin restartable server is the right home
+  for churny features (ptyhost stays frozen so sessions survive upgrades).
+- **The frontend never crosses the wire.** The client serves `ui/` and its
+  @xterm vendor packages from the app bundle via a `webmux://` protocol
+  handler (registered standard+secure, so localStorage and the clipboard
+  APIs work). Each connection loads `webmux://<host-slug>/?port=<local>`;
+  the page reads the port and points its fetches and WebSockets at
+  `http://127.0.0.1:<port>`. The server answers every request with
+  permissive CORS — the unix socket's permissions and sshd are the access
+  control, browser origin checks add nothing there. Versioning stays sound:
+  the UI ships with the client, and connecting pushes the matching server
+  payload (hash-checked), so both ends still come from the same build.
 - **SSH is the transport and the auth; the filesystem is the local access
   control.** The server has no TCP listener at all — it serves plain http on
   a unix socket whose permissions (0600 in the 0700 runtime dir) mean only
@@ -56,19 +70,17 @@ Design decisions, and why:
   mode. The profile's instance field (blank = `default`) selects which
   named instance to run; distinct instances have independent servers and
   session sets.
-- **Fixed local port — across tunnel respawns and app runs.** app.js
-  already reconnects its WebSockets with backoff and repaints from ptyhost
-  snapshots. If the tunnel comes back on the same port, the loaded page
-  self-heals — no reload, no lost tile layout. The port is picked once per
-  profile (or pinned in the profile) and then persisted (`savedPort` in
-  config.json), so the profile keeps the same origin
-  `http://127.0.0.1:<port>` across app runs: the page's origin-keyed
-  localStorage — the layout tree and file-browser state — survives a
-  close/reopen. Layouts thereby stay per client *and* per host, which is
-  the right scoping: an arrangement fits the client's screen, not the
-  server. If another program grabbed the saved port, a fresh one is picked
-  (that stash of localStorage waits under the old origin until the port
-  frees up again).
+- **Stable local port within a run; origin independent of it.** app.js
+  reconnects its WebSockets with backoff and repaints from ptyhost
+  snapshots, so a tunnel that comes back on the same port heals the loaded
+  page in place — no reload, no lost tile layout. The port is picked once
+  per profile per app run (or pinned in the profile); nothing persists it,
+  because the page's origin — and thus its localStorage (layout tree,
+  file-browser state) — is the `webmux://<host-slug>` origin derived from
+  the profile's host+instance, stable across app runs, port changes, and
+  profile renames. Layouts thereby stay per client *and* per host, which
+  is the right scoping: an arrangement fits the client's screen, not the
+  server.
 - **Resume is ptyhost's job and is untouched.** Disconnect (tunnel death,
   sleep, network change) just detaches the socket; the headless mirror keeps
   recording; reattach replays a full snapshot.
@@ -78,12 +90,12 @@ Design decisions, and why:
 ### 1. Server: unix-socket listener (done)
 
 `server.listen` takes the socket path (`$XDG_RUNTIME_DIR/webmux/
-<ptyhost>.http.sock` by default, `socket:` in config to override), chmods it
+<ptyhost>.http.sock` by default, env `WEBMUX_SOCKET` to override), chmods it
 0600, recovers a stale socket file left by a dead server (probe → remove →
 relisten, same dance as ptyhost), and removes it on SIGINT/SIGTERM. On
 listen it writes the JSON advert `~/.webmux/<name>.json` (0600 in a 0700
 dir; socket path, payload hash, protocol, pid) that the deploy flow reads —
-this also tracks a `socket:` override automatically. No TCP, TLS, or auth
+this also tracks a socket override automatically. No TCP, TLS, or auth
 code remains.
 
 ### 2. Electron app: `electron/` (done)
@@ -94,12 +106,11 @@ A self-contained npm package so the server install never pulls Electron.
   - **Profiles** at `<userData>/config.json` (`~/Library/Application
     Support/webmux/config.json` on macOS): `{ profiles: [{ name, host,
     sshPort, identityFile, instance, localPort, extraOptions,
-    passwordEnc, savedPort }], lastProfile }`. `savedPort` is main's
-    bookkeeping (the persisted auto-picked local port, see below), carried
-    through edits rather than shown in the form. The pre-profiles single-host shape is
+    passwordEnc }], lastProfile }`. The pre-profiles single-host shape is
     migrated on first load; the pre-unix-socket `remotePort` field is
-    dropped, and a legacy bare-name `remoteSocket` becomes the `instance`
-    field (an absolute-path one falls back to `default`). `instance` is
+    dropped, a legacy bare-name `remoteSocket` becomes the `instance`
+    field (an absolute-path one falls back to `default`), and the
+    pre-webmux://-origin `savedPort` field is dropped. `instance` is
     validated on save: blank or `[A-Za-z0-9._-]+` — it is interpolated
     into remote shell commands, so it must stay shell-inert. Startup always
     lands on the connection manager — connecting is the user's call; ⌘⇧O

@@ -12,26 +12,42 @@
 // server there — a host needs nothing but sshd, and there is no separate
 // "server already running" mode.
 //
-// Per connection, the whole app rides one forward: the page, /api/*, and /ws
-// all go to http://127.0.0.1:<localPort>, which ssh forwards to the server's
-// unix socket on the remote box ($XDG_RUNTIME_DIR/webmux/<name>.http.sock —
-// filesystem perms there are the access control, sshd is the front door).
-// The local port is chosen once per profile and reused across tunnel
-// respawns, so the loaded page's own WebSocket-retry logic heals blips
-// without a reload; sessions repaint from pty-host snapshots.
+// The frontend is served locally: each connection's view loads
+// webmux://<host-slug>/?port=<localPort>, a custom scheme handled below that
+// serves the UI (ui/ + the @xterm browser packages) straight from the app
+// bundle. Only /api/* and /ws cross the wire, to http://127.0.0.1:<localPort>,
+// which ssh forwards to the server's unix socket on the remote box
+// ($XDG_RUNTIME_DIR/webmux/<name>.http.sock — filesystem perms there are the
+// access control, sshd is the front door). The webmux:// origin is derived
+// from the profile's host+instance, so the page's localStorage (layout tree,
+// file-browser state) is keyed per host, not per forward port. The local
+// port is stable within an app run, so the loaded page's own WebSocket-retry
+// logic heals tunnel blips without a reload; sessions repaint from pty-host
+// snapshots.
 //
 // Connection profiles are managed in connect.html (renderer, talking over
 // the preload bridge) and stored in <userData>/config.json.
 
 const {
   app, BaseWindow, WebContentsView, Menu, shell, powerMonitor, ipcMain, safeStorage,
+  protocol, net: electronNet,
 } = require('electron');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { deploy } = require('./deploy');
+
+// The app pages load on webmux:// (served from the bundle by the handler in
+// app.whenReady). standard+secure gives the scheme real origins — per-host
+// localStorage — and the secure-context APIs (navigator.clipboard) the page
+// relies on. Must run before app ready.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'webmux', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+]);
 
 // ---------------------------------------------------------------------------
 // Profile store: <userData>/config.json
@@ -48,14 +64,9 @@ const PROFILE_DEFAULTS = {
   // there — the host needs nothing but sshd. Distinct instance names get
   // independent servers and session sets on the same host.
   instance: '',
-  localPort: 0, // 0 = auto-pick (then sticky via savedPort)
+  localPort: 0, // 0 = auto-pick per app run (the page's origin no longer depends on it)
   extraOptions: '', // extra ssh args, whitespace-separated
   passwordEnc: '', // safeStorage ciphertext, base64; never leaves main
-  // The auto-picked local port, persisted so the profile keeps the same
-  // origin (http://127.0.0.1:<port>) across app runs — the page's
-  // localStorage (layout tree, file-browser state) is keyed by it. Reused
-  // while free; silently re-picked if some other program grabbed it.
-  savedPort: 0,
 };
 
 const configFile = () => path.join(app.getPath('userData'), 'config.json');
@@ -74,8 +85,9 @@ function loadStore() {
       // Migrate older per-profile fields: remotePort (pre-unix-socket) is
       // dropped; a bare-name remoteSocket (pre-deploy-only discovery)
       // becomes the instance name, an absolute-path one has no deploy
-      // equivalent and falls back to 'default'; autoDeploy is implied now.
-      profiles: raw.profiles.map(({ remotePort, remoteSocket, autoDeploy, ...p }) => ({
+      // equivalent and falls back to 'default'; autoDeploy is implied now;
+      // savedPort (pre-webmux:// origins) no longer means anything.
+      profiles: raw.profiles.map(({ remotePort, remoteSocket, autoDeploy, savedPort, ...p }) => ({
         ...PROFILE_DEFAULTS,
         instance: remoteSocket && !String(remoteSocket).startsWith('/') ? String(remoteSocket) : '',
         ...p,
@@ -161,18 +173,13 @@ function probePort(want) {
   });
 }
 
-// The local forward port for a profile, sticky across app runs: a
-// user-pinned localPort wins; otherwise reuse this run's pick, then the
-// persisted savedPort (if still free — losing it to another program costs
-// the origin-keyed layout, so prefer it), then a fresh free port.
+// The local forward port for a profile: a user-pinned localPort wins;
+// otherwise reuse this run's pick (a stable port lets a loaded page's WS
+// retry loop heal tunnel respawns), then any fresh free port. Nothing else
+// depends on the number — the page's origin is the webmux:// host slug.
 async function pickPort(profile) {
   if (profile.localPort) return profile.localPort;
-  const cached = portByProfile.get(profile.name);
-  if (cached) return cached;
-  if (profile.savedPort) {
-    try { return await probePort(profile.savedPort); } catch { /* taken — re-pick */ }
-  }
-  return probePort(0);
+  return portByProfile.get(profile.name) || probePort(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,8 +280,22 @@ function setConnStatus(conn, s) {
 // Connections: one supervised tunnel + view per profile
 // ---------------------------------------------------------------------------
 
-const appUrl = (conn) => `http://127.0.0.1:${conn.localPort}/`;
-const pageLive = (conn) => conn.localPort > 0 && conn.view.webContents.getURL().startsWith(appUrl(conn));
+// The page's origin: a slug of the profile's host+instance (plus a short
+// hash so sanitization can't collide two hosts). Stable across profile
+// renames and forward-port changes, so the layout localStorage keyed to it
+// survives both.
+function appOrigin(conn) {
+  const { host, instance } = conn.profile;
+  const hash = crypto.createHash('sha256')
+    .update(`${host}\n${String(instance || '') || 'default'}`).digest('hex').slice(0, 8);
+  const base = String(host).toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  return `webmux://${base ? `${base}-${hash}` : hash}/`;
+}
+
+// The page URL carries the API endpoint; a changed port means the loaded
+// page (if any) is talking to a dead forward and needs a reload.
+const appUrl = (conn) => `${appOrigin(conn)}?port=${conn.localPort}`;
+const pageLive = (conn) => conn.localPort > 0 && conn.view.webContents.getURL() === appUrl(conn);
 
 // A connection whose page is up rides out tunnel blips in place (the page's
 // own WS retry heals it). One whose page never loaded has nothing to show —
@@ -310,16 +331,16 @@ function createConnection(profile) {
     conn.tabCount = Number(/(\d+) tab/.exec(title)?.[1]) || 0;
     updateTitle();
   });
-  // Only this connection's tunnel origin may load in-window.
+  // Only this connection's own webmux:// origin may load in-window.
   wc.on('will-navigate', (ev, url) => {
-    if (url.startsWith(appUrl(conn))) return;
+    if (url.startsWith(appOrigin(conn))) return;
     ev.preventDefault();
     if (/^https?:/.test(url)) shell.openExternal(url);
   });
-  // Cmd+R while the tunnel is down, or a load race: fall back to the
+  // Cmd+R while the page is broken, or a load race: fall back to the
   // connection page instead of Chromium's error page. -3 is ERR_ABORTED.
   wc.on('did-fail-load', (_ev, code, _desc, url, isMainFrame) => {
-    if (!isMainFrame || code === -3 || !url.startsWith('http')) return;
+    if (!isMainFrame || code === -3 || !url.startsWith('webmux:')) return;
     if (activeName === conn.name) show(null);
     if (conn.tunnel) pollServer(conn, conn.generation);
   });
@@ -355,13 +376,7 @@ async function connectConn(conn) {
   store.lastProfile = conn.name;
   conn.localPort = await pickPort(conn.profile);
   portByProfile.set(conn.name, conn.localPort);
-  // Persist the pick so the next app run lands on the same origin and finds
-  // this profile's localStorage (layout tree, file-browser state) again.
-  const stored = findProfile(conn.name);
-  if (stored && !stored.localPort && stored.savedPort !== conn.localPort) {
-    stored.savedPort = conn.localPort;
-  }
-  saveStore();
+  saveStore(); // lastProfile
   conn.retryDelay = 0;
   startTunnel(conn);
 }
@@ -553,9 +568,6 @@ function registerIpc() {
     // explicit clear flag removes it. Stored only as safeStorage ciphertext.
     const existing = findProfile(originalName || p.name);
     p.passwordEnc = clearPassword ? '' : (existing ? existing.passwordEnc : '');
-    // savedPort is main's bookkeeping, not a form field — carry it through
-    // edits so the profile keeps its origin (and thus its saved layout).
-    p.savedPort = existing ? existing.savedPort : 0;
     if (password) {
       if (!safeStorage.isEncryptionAvailable()) {
         return { error: 'OS keychain encryption is unavailable — cannot store a password' };
@@ -632,6 +644,48 @@ function registerIpc() {
       .executeJavaScript(`window.dispatchEvent(new Event(${JSON.stringify(event)}))`)
       .catch(() => {});
     return { ok: true };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// webmux:// — the app frontend, served straight from the bundle. Each
+// connection loads webmux://<host-slug>/?port=<localPort>; only API and WS
+// traffic touches the tunnel. Every host slug shares this one handler — the
+// URL's host part exists purely to give each remote host its own origin
+// (and thus its own localStorage).
+// ---------------------------------------------------------------------------
+
+const UI_DIR = path.join(__dirname, 'ui');
+const VENDOR_DIRS = {
+  xterm: path.join(__dirname, 'node_modules', '@xterm', 'xterm'),
+  'addon-fit': path.join(__dirname, 'node_modules', '@xterm', 'addon-fit'),
+  'addon-web-links': path.join(__dirname, 'node_modules', '@xterm', 'addon-web-links'),
+};
+
+// URL path -> file inside the bundle, or null (404). Vendor paths map into
+// the client's own @xterm packages; everything else comes from ui/.
+function uiFile(pathname) {
+  let root = UI_DIR;
+  let rel = decodeURIComponent(pathname);
+  const vendor = /^\/vendor\/([^/]+)(\/.+)$/.exec(rel);
+  if (vendor) {
+    root = VENDOR_DIRS[vendor[1]];
+    if (!root) return null;
+    rel = vendor[2];
+  }
+  if (rel === '/') rel = '/index.html';
+  const file = path.normalize(path.join(root, rel));
+  return file.startsWith(root + path.sep) ? file : null; // no escaping the root
+}
+
+function registerAppScheme() {
+  protocol.handle('webmux', (req) => {
+    const file = uiFile(new URL(req.url).pathname);
+    if (!file) return new Response('not found', { status: 404 });
+    // net.fetch on a file: URL supplies mime types (and reads inside asar);
+    // it rejects on a missing file rather than returning a status.
+    return electronNet.fetch(pathToFileURL(file).toString())
+      .catch(() => new Response('not found', { status: 404 }));
   });
 }
 
@@ -725,6 +779,7 @@ function buildMenu() {
 app.whenReady().then(() => {
   loadStore();
   ensureAskpass();
+  registerAppScheme();
   registerIpc();
   buildMenu();
   createWindow();

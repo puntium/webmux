@@ -2,10 +2,11 @@
 
 A quick prototype: multiple tiled xterm.js terminal sessions with
 **persistent server-side state** — sessions keep running and keep their full
-screen buffer when no client is attached. The UI is a web frontend, but it is
-served over a unix socket and reached through the macOS Electron client
-(`electron/`), which tunnels the socket over SSH — there is no browser/TCP
-deployment mode.
+screen buffer when no client is attached. The UI is a web frontend shipped
+inside the macOS Electron client (`electron/`), which serves it locally and
+talks to the server's unix socket through an SSH tunnel — only API and
+WebSocket traffic crosses the wire, and there is no browser/TCP deployment
+mode.
 
 ## How it works
 
@@ -15,8 +16,8 @@ deployment mode.
   so the buffer, cursor, colors, and modes live in the daemon. It listens on a
   named unix socket (`$XDG_RUNTIME_DIR/webmux/<name>.sock`) speaking
   newline-delimited JSON that mirrors the WebSocket protocol.
-- **Web server** (`server.js`): a thin restartable proxy — static files and
-  WebSocket termination, forwarding frames to the pty host. It listens on a
+- **Web server** (`server.js`): a thin restartable proxy — a small JSON API
+  plus WebSocket termination, forwarding frames to the pty host. It listens on a
   unix socket of its own (`$XDG_RUNTIME_DIR/webmux/<name>.http.sock`, 0600 in
   a 0700 dir), so filesystem permissions are the whole access story — no TCP
   port, no TLS, no auth. It spawns the host on demand at startup (detached),
@@ -28,7 +29,7 @@ deployment mode.
   serializes the headless buffer with `@xterm/addon-serialize` and sends it as a
   `snapshot` — the client renders exactly what the session looks like now,
   including scrollback.
-- **Client** (`public/`): a tmux-style split layout — a binary tree where leaves
+- **Client** (`electron/ui/`): a tmux-style split layout — a binary tree where leaves
   are panes and internal nodes are horizontal/vertical splits with a drag-resizable
   divider. One xterm.js instance per pane, each on its own WebSocket. The fit
   addon reports pane resizes back to the server, which resizes both the PTY and
@@ -48,14 +49,13 @@ The server listens on a unix socket only. To use it, connect from a Mac with
 the Electron client (see below); for a quick local check,
 `curl --unix-socket $XDG_RUNTIME_DIR/webmux/default.http.sock http://localhost/api/sessions`.
 
-Optional config lives in `config.yaml` (gitignored; copy
-`config.example.yaml`):
+Optional config is env vars only (a deployed payload has no config file):
 
-- `ptyhost: <name>` picks which pty host the server fronts (default
-  `default`; env `WEBMUX_PTYHOST` overrides). Different names are fully
-  independent daemons — own pty socket, own http socket
-  (`<name>.http.sock`) — so several webmux instances can run side by side.
-- `socket: /path/to.sock` overrides the http socket path.
+- `WEBMUX_PTYHOST=<name>` picks which pty host the server fronts (default
+  `default`). Different names are fully independent daemons — own pty
+  socket, own http socket (`<name>.http.sock`) — so several webmux
+  instances can run side by side.
+- `WEBMUX_SOCKET=/path/to.sock` overrides the http socket path.
 
 ### macOS client (Electron over SSH)
 
@@ -117,7 +117,7 @@ colliding names deduped Finder-style). The selected entry can be renamed
 confirmation — directories recursively; `POST /api/fs/delete`), via keyboard
 or the ✎/✕ buttons on the row. Browser tabs
 are client-side widgets (no server session) implemented in
-`public/files-widget.js`; their path and cursor persist in localStorage
+`electron/ui/files-widget.js`; their path and cursor persist in localStorage
 alongside the layout, and they drag between panes like any other tab.
 
 ## Protocol
@@ -145,8 +145,8 @@ Code's copy actions, `tmux set-buffer -w`) lands on the browser's system
 clipboard: the escape sequence travels through the PTY to the client
 unmodified, and the browser-side handler writes it with
 `navigator.clipboard.writeText`. The write needs the tab to be focused and a
-secure context — satisfied in the Electron client, whose page origin is
-`http://127.0.0.1:<port>` (localhost counts).
+secure context — satisfied in the Electron client, whose `webmux://` page
+scheme is registered as secure.
 
 **Running tmux inside a webmux pane** needs one line of tmux config to pass
 copies through:
@@ -198,7 +198,7 @@ the native paste event that follows carries the clipboard (no permission
 needed): image → upload flow, text → xterm's normal paste. If no paste event
 follows (macOS, where Ctrl+V isn't a paste shortcut), the client falls back
 to `navigator.clipboard.read()`, which needs clipboard permission plus a
-secure context (the `http://127.0.0.1` tunnel origin qualifies). Ctrl+Alt+V
+secure context (the `webmux://` scheme qualifies). Ctrl+Alt+V
 sends a literal `^V` (vim visual-block). The clipboard image is also
 proactively synced to the server slot on window focus where the async API is
 available (browsers have no clipboardchange event).

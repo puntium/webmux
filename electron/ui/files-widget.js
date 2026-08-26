@@ -21,6 +21,7 @@
 // Circular with app.js's import of this module, which is fine: both modules
 // only call across the cycle at runtime, never during evaluation.
 import { setStatus } from './app.js';
+import { API } from './env.js';
 
 export const isFilesId = (id) => typeof id === 'string' && id.startsWith('files-');
 
@@ -153,7 +154,7 @@ function confirmModal(text) {
 }
 
 async function fsApi(endpoint, body) {
-  const res = await fetch(`/api/fs/${endpoint}`, {
+  const res = await fetch(`${API}/api/fs/${endpoint}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -186,7 +187,7 @@ export function makeFilesTile(id) {
     if (hit && Date.now() - hit.t < LIST_TTL) return hit.data;
     let data;
     try {
-      data = await (await fetch(`/api/fs/list?path=${encodeURIComponent(dir)}`)).json();
+      data = await (await fetch(`${API}/api/fs/list?path=${encodeURIComponent(dir)}`)).json();
     } catch (err) {
       data = { error: String(err) };
     }
@@ -207,7 +208,7 @@ export function makeFilesTile(id) {
     for (const f of files) {
       const q = `dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(f.name || 'pasted')}`;
       try {
-        const res = await fetch(`/api/fs/upload?${q}`, {
+        const res = await fetch(`${API}/api/fs/upload?${q}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: f.file,
@@ -397,7 +398,7 @@ export function makeFilesTile(id) {
     body.className = 'files-preview-body';
     if (info.kind === 'image') {
       const img = document.createElement('img');
-      img.src = `/api/fs/raw?path=${encodeURIComponent(filePath)}`;
+      img.src = `${API}/api/fs/raw?path=${encodeURIComponent(filePath)}`;
       img.alt = fsBase(filePath);
       body.appendChild(img);
     } else if (info.kind === 'text') {
@@ -423,7 +424,7 @@ export function makeFilesTile(id) {
     col.dataset.key = 'preview';
     enableDrop(col, () => fsParent(filePath));
     col.appendChild(msg('…'));
-    fetch(`/api/fs/preview?path=${encodeURIComponent(filePath)}`)
+    fetch(`${API}/api/fs/preview?path=${encodeURIComponent(filePath)}`)
       .then((r) => r.json())
       .then((info) => {
         if (g !== gen) return; // superseded by a newer render

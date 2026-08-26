@@ -19,7 +19,7 @@ updates / server restarts as much as possible.
   server kills every shell.
 - Sessions live in an in-memory Map with counter IDs (`nextId`, server.js:122)
   that reset on restart — collides with IDs the client keeps in localStorage.
-- No client reconnect: `ws.onclose` (public/app.js:537) prints `[disconnected]`
+- No client reconnect: `ws.onclose` (electron/ui/app.js) prints `[disconnected]`
   and gives up. Recovery requires a page reload.
 - The headless mirror gives "persistent screen state, ephemeral processes" —
   it survives client disconnects, not server restarts.
@@ -33,7 +33,7 @@ updates / server restarts as much as possible.
    server.js:196 already does this). Without it, any restart still leaves
    panes dead until manual reload. Cheap; do this first.
 2. **Stable session IDs** (UUIDs, not a resetting counter). The existing
-   `attachExisting()` reconciliation (public/app.js:737) then re-adopts live
+   `attachExisting()` reconciliation (electron/ui/app.js) then re-adopts live
    sessions across restarts.
 
 ## Option 1 (recommended baseline): pty-host daemon

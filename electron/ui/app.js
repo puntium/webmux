@@ -17,6 +17,7 @@
 import {
   isFilesId, createFilesWidget, makeFilesTile, discardWidgetState, pruneWidgetStates,
 } from './files-widget.js';
+import { API, WS_BASE } from './env.js';
 
 const layoutEl = document.getElementById('layout');
 const tiles = new Map(); // sessionId -> tile
@@ -91,9 +92,9 @@ function removeSessionFromTree(sessionId) {
 }
 
 // The layout stays in localStorage, i.e. per client *and* per host: storage
-// is keyed by origin, and in the Electron client each profile gets a stable
-// local forward port (persisted as the profile's savedPort), so different
-// clients keep the layouts that fit their own screens.
+// is keyed by origin, and the Electron client serves this page on a
+// webmux://<host-slug> origin derived from the profile's host+instance, so
+// different clients keep the layouts that fit their own screens.
 function saveLayout() {
   localStorage.setItem('webmux-layout', JSON.stringify(tree));
 }
@@ -622,9 +623,7 @@ function makeTile(sessionId) {
     // tile is closed.
     connect() {
       const term = this.term;
-      const ws = new WebSocket(
-        `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?session=${sessionId}`
-      );
+      const ws = new WebSocket(`${WS_BASE}/ws?session=${sessionId}`);
       this.ws = ws;
 
       ws.onopen = () => {
@@ -744,7 +743,7 @@ async function removeTile(sessionId, killServerSession) {
   tile.term?.dispose();
   tile.root.remove();
   if (killServerSession && !isFilesId(sessionId)) {
-    await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+    await fetch(`${API}/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {});
   }
   discardWidgetState(sessionId);
   removeSessionFromTree(sessionId);
@@ -757,7 +756,7 @@ async function removeTile(sessionId, killServerSession) {
 // ---------------------------------------------------------------------------
 
 async function createServerSession() {
-  const res = await fetch('/api/sessions', {
+  const res = await fetch(`${API}/api/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ cols: 80, rows: 24 }),
@@ -834,7 +833,7 @@ function newFilesSession() {
 // ---------------------------------------------------------------------------
 
 async function attachExisting() {
-  const sessions = await (await fetch('/api/sessions')).json();
+  const sessions = await (await fetch(`${API}/api/sessions`)).json();
   const live = sessions.map((s) => s.id);
   const liveSet = new Set(live);
 

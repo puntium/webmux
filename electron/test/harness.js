@@ -58,6 +58,8 @@ const stub = {
   shell: { openExternal: () => {}, openPath: () => {} },
   powerMonitor: { on: () => {} },
   ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } },
+  protocol: { registerSchemesAsPrivileged: () => {}, handle: () => {} },
+  net: { fetch: () => Promise.reject(new Error('no net in tests')) },
   safeStorage: {
     isEncryptionAvailable: () => true,
     encryptString: (s) => Buffer.from('ENC:' + s),
@@ -175,21 +177,16 @@ const connState = async (name) =>
   assert.strictEqual(st.state, 'failed', 'no auto-retry after a never-connected failure');
   console.log('failed-parks ok  (stderr: ' + st.stderr.split('\n')[0] + ')');
 
-  // -- sticky local port ------------------------------------------------
-  // The auto-picked port is persisted (savedPort) so the profile keeps its
-  // origin — and its origin-keyed localStorage layout — across app runs.
-  const firstPort = readStore().profiles.find((p) => p.name === 'bad').savedPort;
-  assert.ok(firstPort > 0, 'auto-picked port persisted as savedPort');
+  // -- no port bookkeeping in the store ----------------------------------
+  // The page's origin is the webmux:// host slug now, so the auto-picked
+  // forward port is ephemeral: nothing persists it (legacy savedPort fields
+  // are dropped on load).
+  assert.ok(!('savedPort' in readStore().profiles.find((p) => p.name === 'bad')),
+    'no savedPort persisted for an auto-picked port');
   r = await handlers['profiles:connect'](null, 'bad'); // retry the parked profile
   assert.ok(r.ok);
-  assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').savedPort,
-    firstPort, 'reconnect reuses the same port');
-  r = await handlers['profiles:save'](null, { name: 'bad', host: 'nobody@webmux-test.invalid' }, 'bad');
-  assert.ok(r.ok);
-  assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').savedPort,
-    firstPort, 'profile edit keeps savedPort (not a form field)');
   await sleep(2500); // let the retried connect park again before moving on
-  console.log('sticky-port ok  (port ' + firstPort + ')');
+  console.log('ephemeral-port ok');
 
   // -- concurrent connections are independent ----------------------------
   r = await handlers['profiles:save'](null, { name: 'bad2', host: 'nobody@webmux-test2.invalid' });
