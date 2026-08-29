@@ -204,6 +204,18 @@ const connState = async (name) =>
   await sleep(2500);
   assert.strictEqual((await connState('bad2')).state, 'failed', 'second connection fails independently');
 
+  // pills reorder in place: the snapshot (and so Cmd+<n>) follow the drag order
+  r = await handlers['conns:reorder'](null, ['bad2', 'bad']);
+  assert.ok(r.ok);
+  snap = await handlers['conns:get']();
+  assert.deepStrictEqual(snap.connections.map((c) => c.name), ['bad2', 'bad'], 'reorder moves the pill');
+  r = await handlers['conns:reorder'](null, ['nope', 'bad', 'bad']);
+  assert.ok(r.ok);
+  snap = await handlers['conns:get']();
+  assert.deepStrictEqual(snap.connections.map((c) => c.name), ['bad', 'bad2'],
+    'unknown/duplicate names dropped; omitted connections keep their place at the end');
+  assert.ok((await handlers['conns:reorder'](null, 'bad')).error, 'non-array order rejected');
+
   // switching views never touches tunnels
   await handlers['conns:show'](null, 'bad');
   snap = await handlers['conns:get']();

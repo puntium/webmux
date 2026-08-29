@@ -80,6 +80,11 @@
     padding: 2px 4px;
   }
   .pill:hover .x { opacity: 0.55; }
+  /* Drag-to-reorder: the picked-up pill fades, an accent bar marks the
+     insertion point on whichever neighbor the drop would land beside. */
+  .pill.dragging { opacity: 0.3; }
+  .pill.drop-before { box-shadow: -4px 0 0 -1px var(--accent); }
+  .pill.drop-after { box-shadow: 4px 0 0 -1px var(--accent); }
   .x:hover { opacity: 1 !important; color: #f7768e; }
   #connectionsBtn {
     justify-self: end;
@@ -125,7 +130,7 @@
   function render() {
     document.getElementById('pills').innerHTML = snap.connections.map((c, i) => `
       <span class="pill${c.name === snap.active ? ' active' : ''}"
-            data-show="${esc(c.name)}"
+            data-show="${esc(c.name)}" draggable="true"
             title="${esc(c.name)} — ${esc(stateTip(c))}${i < 9 ? ` (⌘${i + 1})` : ''}">
         <span class="dot ${esc(c.state)}"></span>${esc(c.name)}
         <button class="x" title="Disconnect" data-x="${esc(c.name)}">✕</button>
@@ -144,6 +149,56 @@
     const pill = ev.target.closest('[data-show]');
     if (pill) webmux.showConn(pill.dataset.show);
   });
+
+  // Drag a pill to reorder hosts. The drop slot is decided by the pointer's
+  // x against every other pill's midpoint (so gaps and the trailing edge
+  // work too); the header reorders itself optimistically and main confirms
+  // via the next conns broadcast (which also renumbers the ⌘<n> tooltips).
+  const pillsEl = document.getElementById('pills');
+  let dragName = null;
+  const otherPills = () => [...pillsEl.querySelectorAll('[data-show]')]
+    .filter((p) => p.dataset.show !== dragName);
+  const dropSlot = (x) => otherPills()
+    .filter((p) => { const r = p.getBoundingClientRect(); return r.left + r.width / 2 < x; }).length;
+  const clearDropMarks = () => {
+    for (const p of pillsEl.querySelectorAll('.drop-before, .drop-after')) {
+      p.classList.remove('drop-before', 'drop-after');
+    }
+  };
+  pillsEl.addEventListener('dragstart', (ev) => {
+    const pill = ev.target.closest('[data-show]');
+    if (!pill) { ev.preventDefault(); return; }
+    dragName = pill.dataset.show;
+    ev.dataTransfer.effectAllowed = 'move';
+    ev.dataTransfer.setData('text/plain', dragName);
+    pill.classList.add('dragging');
+  });
+  pillsEl.addEventListener('dragover', (ev) => {
+    if (!dragName) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'move';
+    clearDropMarks();
+    const others = otherPills();
+    const slot = dropSlot(ev.clientX);
+    if (slot < others.length) others[slot].classList.add('drop-before');
+    else others.at(-1)?.classList.add('drop-after');
+  });
+  pillsEl.addEventListener('drop', (ev) => {
+    if (!dragName) return;
+    ev.preventDefault();
+    const names = snap.connections.map((c) => c.name).filter((n) => n !== dragName);
+    names.splice(dropSlot(ev.clientX), 0, dragName);
+    dragName = null;
+    snap.connections.sort((a, b) => names.indexOf(a.name) - names.indexOf(b.name));
+    render(); // also drops the dragging/drop-* classes
+    webmux.reorderConns(names);
+  });
+  pillsEl.addEventListener('dragend', () => {
+    dragName = null;
+    clearDropMarks();
+    pillsEl.querySelector('.dragging')?.classList.remove('dragging');
+  });
+
   document.getElementById('connectionsBtn').addEventListener('click', () => webmux.showConn(null));
   document.getElementById('newTermBtn').addEventListener('click', () => webmux.chromeCmd('new-terminal'));
   document.getElementById('newFilesBtn').addEventListener('click', () => webmux.chromeCmd('new-files'));

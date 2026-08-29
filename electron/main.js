@@ -192,7 +192,7 @@ const HEADER_H = 38;
 let win = null;
 let headerView = null;
 let connectView = null; // connect.html — profile manager + status detail
-const conns = new Map(); // profile name -> connection; insertion order = pill order
+const conns = new Map(); // profile name -> connection; insertion order = pill order (drag-reorderable)
 let activeName = null; // name of the connection whose view is showing; null = connect page
 const portByProfile = new Map(); // ephemeral picks, stable within this app run
 let quitting = false;
@@ -631,6 +631,21 @@ function registerIpc() {
   ipcMain.handle('conns:get', () => snapshot());
   ipcMain.handle('conns:show', (_ev, name) => { userShow(name); return { ok: true }; });
   ipcMain.handle('conns:disconnect', (_ev, name) => { disconnect(name); return { ok: true }; });
+
+  // Pills are drag-reorderable; the Map's insertion order is the pill order
+  // (and the Cmd+<n> order), so rebuild it in the requested sequence. Names
+  // the header doesn't know about (a connect racing the drop) keep their
+  // relative order at the end.
+  ipcMain.handle('conns:reorder', (_ev, names) => {
+    if (!Array.isArray(names)) return { error: 'bad order' };
+    const ordered = names.filter((n, i) => conns.has(n) && names.indexOf(n) === i);
+    for (const n of conns.keys()) if (!ordered.includes(n)) ordered.push(n);
+    const entries = ordered.map((n) => [n, conns.get(n)]);
+    conns.clear();
+    for (const [k, v] of entries) conns.set(k, v);
+    broadcast();
+    return { ok: true };
+  });
 
   // Header-strip actions relayed into the visible host page as DOM events
   // (the page has no preload bridge, so injection is the only way in — and

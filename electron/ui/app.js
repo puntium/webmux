@@ -430,8 +430,14 @@ async function writeHostClipboard(text) {
 // on every tab's socket; remember served ids so the chooser pops only once.
 const seenOpenIds = new Set();
 
+// Hand a URL to the system browser. The page runs inside the Electron
+// client, where window.open never opens in-window: the client's
+// window-open handler routes http(s) URLs to shell.openExternal.
+const openInBrowser = (uri) => window.open(uri, '_blank', 'noopener');
+
 // Clicking a detected URL in a terminal pops this chooser instead of xterm's
-// default open-immediately behavior. Returns focus to the terminal on close.
+// default open-immediately behavior (shift-click skips it — see the
+// web-links handler in Tile). Returns focus to the terminal on close.
 function showLinkModal(uri, tile) {
   const overlay = document.createElement('div');
   overlay.className = 'link-modal-overlay';
@@ -439,9 +445,10 @@ function showLinkModal(uri, tile) {
     <div class="link-modal" role="dialog" aria-label="Link options">
       <div class="link-url"></div>
       <div class="link-actions">
+        <span class="link-hint">⇧-click a link to open it without asking</span>
         <button class="link-cancel">Cancel</button>
         <button class="link-copy">Copy</button>
-        <button class="link-open primary">Open in new tab</button>
+        <button class="link-open primary">Open in browser</button>
       </div>
     </div>`;
   overlay.querySelector('.link-url').textContent = uri;
@@ -468,7 +475,7 @@ function showLinkModal(uri, tile) {
     writeHostClipboard(uri);
   });
   overlay.querySelector('.link-open').addEventListener('click', () => {
-    window.open(uri, '_blank', 'noopener');
+    openInBrowser(uri);
     close();
   });
 
@@ -518,10 +525,12 @@ function makeTile(sessionId) {
 
       // URL detection: the web-links addon underlines http(s) URLs on hover;
       // a click lands here instead of opening directly, so the user chooses
-      // between copying and opening.
+      // between copying and opening. Shift-click skips the chooser and goes
+      // straight to the browser.
       term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => {
         ev.preventDefault();
-        showLinkModal(uri, this);
+        if (ev.shiftKey) openInBrowser(uri);
+        else showLinkModal(uri, this);
       }));
 
       // OSC 52 (ESC ] 52 ; <target> ; <base64> BEL): programs setting the
