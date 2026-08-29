@@ -92,8 +92,10 @@ node ptyhost.js --name X            # run a host standalone in the foreground
 - Drag the divider between panes to resize them.
 - **✕** on a pane kills that session (`DELETE /api/sessions/:id`).
 - Reload the page: all live sessions reattach with state and layout intact.
-- Click a URL in a terminal (underlined on hover, via `@xterm/addon-web-links`)
-  to get a chooser: copy it to the clipboard or open it in a new browser tab.
+- Click a URL in a terminal (plain text underlined on hover via
+  `@xterm/addon-web-links`, or an OSC 8 hyperlink such as Claude Code's `/login`
+  link, via xterm's `linkHandler`) to get a chooser: copy it to the clipboard
+  or open it in a new browser tab. Shift-click opens without asking.
 - Programs that try to launch a browser (`xdg-open`, `sensible-browser`,
   `x-www-browser`, `$BROWSER` — e.g. `gh pr view --web`, OAuth logins) hit
   shims in `shims/` instead: the URL is spooled through the paste dir to the server,

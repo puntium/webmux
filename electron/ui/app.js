@@ -519,6 +519,19 @@ function makeTile(sessionId) {
         fontSize: 13,
         scrollback: 5000,
         theme: { background: '#1f1f2b' },
+        // OSC 8 hyperlinks (Claude Code's /login URL, `ls --hyperlink`, gh)
+        // are handled by xterm's built-in OscLinkProvider, not the web-links
+        // addon below. Without this option its fallback is window.confirm()
+        // followed by a URL-less window.open(), which the Electron shell
+        // denies — so the native "Do you want to navigate…" sheet appeared
+        // and OK did nothing. Route them to the same chooser as plain URLs.
+        linkHandler: {
+          activate: (ev, uri) => {
+            if (ev.shiftKey) openInBrowser(uri);
+            else showLinkModal(uri, this);
+          },
+          allowNonHttpProtocols: false, // mailto:, file: etc. stay inert
+        },
       });
       const fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
