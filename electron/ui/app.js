@@ -18,6 +18,9 @@ import {
   isFilesId, createFilesWidget, makeFilesTile, discardWidgetState, pruneWidgetStates,
 } from './files-widget.js';
 import { API, WS_BASE } from './env.js';
+import {
+  THEMES, getSettings, themeOf, loadSettings, updateSettings, onSettingsChange,
+} from './settings.js';
 
 const layoutEl = document.getElementById('layout');
 const tiles = new Map(); // sessionId -> tile
@@ -453,12 +456,12 @@ const openInBrowser = (uri) => window.open(uri, '_blank', 'noopener');
 // web-links handler in Tile). Returns focus to the terminal on close.
 function showLinkModal(uri, tile) {
   const overlay = document.createElement('div');
-  overlay.className = 'link-modal-overlay';
+  overlay.className = 'modal-overlay';
   overlay.innerHTML = `
-    <div class="link-modal" role="dialog" aria-label="Link options">
+    <div class="modal link-modal" role="dialog" aria-label="Link options">
       <div class="link-url"></div>
-      <div class="link-actions">
-        <span class="link-hint">⇧-click a link to open it without asking</span>
+      <div class="actions">
+        <span class="hint">⇧-click a link to open it without asking</span>
         <button class="link-cancel">Cancel</button>
         <button class="link-copy">Copy</button>
         <button class="link-open primary">Open in browser</button>
@@ -496,6 +499,91 @@ function showLinkModal(uri, tile) {
   overlay.querySelector('.link-open').focus();
 }
 
+// Client-wide settings panel (⚙ in the header, ⌘, in the client). Every
+// control applies live; the store write (settings.js) is what makes the
+// change client-wide, so the slider only persists on release.
+let settingsOverlay = null;
+function showSettingsModal() {
+  if (settingsOverlay) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal settings-modal" role="dialog" aria-label="Settings">
+      <h2>Settings</h2>
+      <p class="lead">Apply to every host on this client.</p>
+      <label class="setting">
+        <span class="setting-label">Color scheme</span>
+        <span class="setting-control"><select class="theme-select"></select></span>
+      </label>
+      <label class="setting">
+        <span class="setting-label">Unfocused pane fade</span>
+        <span class="setting-control">
+          <input class="fade-range" type="range" min="0" max="100" step="5" />
+          <output class="fade-value"></output>
+        </span>
+        <span class="setting-desc">How much panes other than the focused one dim. 0% leaves them untouched.</span>
+      </label>
+      <div class="actions">
+        <button class="settings-close primary">Done</button>
+      </div>
+    </div>`;
+  const select = overlay.querySelector('.theme-select');
+  for (const [id, theme] of Object.entries(THEMES)) {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = theme.label;
+    select.appendChild(opt);
+  }
+  const range = overlay.querySelector('.fade-range');
+  const value = overlay.querySelector('.fade-value');
+  const sync = (s) => {
+    select.value = s.theme;
+    range.value = s.unfocusedFade;
+    value.textContent = `${s.unfocusedFade}%`;
+  };
+  sync(getSettings());
+  const unsubscribe = onSettingsChange(sync); // a push from another host's page
+
+  const close = () => {
+    unsubscribe();
+    overlay.remove();
+    settingsOverlay = null;
+    document.removeEventListener('keydown', onKey, true);
+    tiles.get(focusedPane?.active)?.focus();
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) close();
+  });
+  select.addEventListener('change', () => updateSettings({ theme: select.value }));
+  range.addEventListener('input', () => {
+    value.textContent = `${range.value}%`;
+    updateSettings({ unfocusedFade: range.value }, { persist: false });
+  });
+  range.addEventListener('change', () => updateSettings({ unfocusedFade: range.value }));
+  overlay.querySelector('.settings-close').addEventListener('click', close);
+
+  settingsOverlay = overlay;
+  document.body.appendChild(overlay);
+  select.focus();
+}
+
+// The terminal canvas doesn't see CSS variables: repaint every open
+// terminal's palette when the color scheme changes.
+onSettingsChange((s) => {
+  const theme = themeOf(s).xterm;
+  for (const tile of tiles.values()) {
+    if (tile.term) tile.term.options.theme = theme;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Tiles (terminal DOM + xterm + websocket, one per session)
 // ---------------------------------------------------------------------------
@@ -531,7 +619,7 @@ function makeTile(sessionId) {
         fontFamily: TERM_FONT,
         fontSize: 13,
         scrollback: 5000,
-        theme: { background: '#1f1f2b' },
+        theme: themeOf().xterm,
         // OSC 8 hyperlinks (Claude Code's /login URL, `ls --hyperlink`, gh)
         // are handled by xterm's built-in OscLinkProvider, not the web-links
         // addon below. Without this option its fallback is window.confirm()
@@ -903,10 +991,12 @@ async function attachExisting() {
 
 document.getElementById('new-session').addEventListener('click', newSession);
 document.getElementById('new-files').addEventListener('click', newFilesSession);
+document.getElementById('settings').addEventListener('click', showSettingsModal);
 // The Electron client hides the in-page header and relays its own header-
-// strip buttons as these events (main.js conns:cmd).
+// strip buttons (and the ⌘, menu item) as these events (main.js conns:cmd).
 window.addEventListener('webmux-new-terminal', newSession);
 window.addEventListener('webmux-new-files', newFilesSession);
+window.addEventListener('webmux-settings-open', showSettingsModal);
 
 // A file dropped outside a widget's drop zone must not navigate the page
 // away from webmux (the browser default). Real targets handled it earlier
@@ -927,6 +1017,9 @@ window.addEventListener('resize', () => {
 const TERM_FONT = '"JetBrainsMono Nerd Font", monospace';
 
 async function start() {
+  // Settings first: the theme must be on <html> (and in THEMES for xterm)
+  // before any pane paints. loadSettings never rejects.
+  const settingsReady = loadSettings();
   try {
     await Promise.race([
       Promise.all([
@@ -936,6 +1029,7 @@ async function start() {
       new Promise((resolve) => setTimeout(resolve, 3000)),
     ]);
   } catch { /* fall back to monospace */ }
+  await settingsReady;
   await attachExisting();
   document.fonts.ready.then(() => {
     for (const tile of tiles.values()) {

@@ -71,7 +71,7 @@ const PROFILE_DEFAULTS = {
 
 const configFile = () => path.join(app.getPath('userData'), 'config.json');
 
-let store = { profiles: [], lastProfile: null };
+let store = { profiles: [], lastProfile: null, settings: null }; // settings: see below
 
 function loadStore() {
   let raw = null;
@@ -110,6 +110,7 @@ function loadStore() {
   } else {
     store = { profiles: [], lastProfile: null };
   }
+  store.settings = sanitizeSettings(raw && raw.settings);
 }
 
 function saveStore() {
@@ -118,6 +119,26 @@ function saveStore() {
 }
 
 const findProfile = (name) => store.profiles.find((p) => p.name === name);
+
+// Client-wide UI settings, stored beside the profiles. Each host page is its
+// own webmux:// origin, so its localStorage would make these per host; the
+// pages read and write them at /settings.json on that origin instead (the
+// bundle's protocol handler, registerAppScheme), and a change from any page
+// fans out to every other one plus the header/connect chrome
+// (broadcastSettings). Main only keeps the values well-formed — the theme
+// list lives in the page (ui/settings.js), which falls back to dark for an
+// id it doesn't know.
+const SETTINGS_DEFAULTS = Object.freeze({ theme: 'dark', unfocusedFade: 40 });
+
+function sanitizeSettings(raw, base = SETTINGS_DEFAULTS) {
+  const s = { ...base };
+  if (raw && typeof raw === 'object') {
+    if (typeof raw.theme === 'string' && /^[a-z0-9-]{1,32}$/.test(raw.theme)) s.theme = raw.theme;
+    const fade = Number(raw.unfocusedFade);
+    if (Number.isFinite(fade)) s.unfocusedFade = Math.round(Math.min(100, Math.max(0, fade)));
+  }
+  return s;
+}
 
 // ssh only reads passwords from a TTY or an askpass program. This helper
 // echoes the env var that startTunnel decrypts the saved password into;
@@ -719,19 +740,26 @@ function registerIpc() {
     return { ok: true };
   });
 
-  // Header-strip actions relayed into the visible host page as DOM events
-  // (the page has no preload bridge, so injection is the only way in — and
-  // this direction, client into page, exposes nothing to the server).
-  const CHROME_EVENTS = { 'new-terminal': 'webmux-new-terminal', 'new-files': 'webmux-new-files' };
-  ipcMain.handle('conns:cmd', (_ev, cmd) => {
-    const event = CHROME_EVENTS[cmd];
-    const conn = activeName && conns.get(activeName);
-    if (!event || !conn || !pageLive(conn)) return { error: 'no active page' };
-    conn.view.webContents
-      .executeJavaScript(`window.dispatchEvent(new Event(${JSON.stringify(event)}))`)
-      .catch(() => {});
-    return { ok: true };
-  });
+  ipcMain.handle('conns:cmd', (_ev, cmd) => chromeCmd(cmd));
+
+  ipcMain.handle('settings:get', () => store.settings);
+}
+
+// Header-strip and menu actions relayed into the visible host page as DOM
+// events (app.js listens for each).
+const CHROME_EVENTS = {
+  'new-terminal': 'webmux-new-terminal',
+  'new-files': 'webmux-new-files',
+  settings: 'webmux-settings-open', // the settings panel is drawn by the page
+};
+function chromeCmd(cmd) {
+  const event = CHROME_EVENTS[cmd];
+  const conn = activeName && conns.get(activeName);
+  if (!event || !conn || !pageLive(conn)) return { error: 'no active page' };
+  conn.view.webContents
+    .executeJavaScript(`window.dispatchEvent(new Event(${JSON.stringify(event)}))`)
+    .catch(() => {});
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -765,9 +793,51 @@ function uiFile(pathname) {
   return file.startsWith(root + path.sep) ? file : null; // no escaping the root
 }
 
+// The window's own background shows through while views resize; keep it
+// on the theme so a light page doesn't flash dark edges.
+const WINDOW_BG = { light: '#dfe1e8' };
+const windowBg = () => WINDOW_BG[store.settings.theme] || '#16161e';
+
+const jsonResponse = (obj, status = 200) => new Response(JSON.stringify(obj), {
+  status,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+// Push the current settings everywhere they render: the local chrome over
+// IPC, and each live host page as a DOM event — those pages have no bridge,
+// so injection is the only way in, and this direction (client into page)
+// exposes nothing to the server. The page that made the change already
+// applied it; re-applying is idempotent.
+function broadcastSettings() {
+  const s = store.settings;
+  if (win) win.setBackgroundColor(windowBg());
+  for (const view of [headerView, connectView]) {
+    if (view) view.webContents.send('settings', s);
+  }
+  const js = `window.dispatchEvent(new CustomEvent('webmux-settings', { detail: ${JSON.stringify(s)} }))`;
+  for (const conn of conns.values()) {
+    if (pageLive(conn)) conn.view.webContents.executeJavaScript(js).catch(() => {});
+  }
+}
+
+// /settings.json on any webmux:// origin: GET reads, PUT merges (unknown or
+// malformed fields keep their current value), saves, and fans out.
+async function handleSettingsRequest(req) {
+  if (req.method === 'GET') return jsonResponse(store.settings);
+  if (req.method !== 'PUT') return new Response('method not allowed', { status: 405 });
+  let body;
+  try { body = await req.json(); } catch { return new Response('bad json', { status: 400 }); }
+  store.settings = sanitizeSettings(body, store.settings);
+  saveStore();
+  broadcastSettings();
+  return jsonResponse(store.settings);
+}
+
 function registerAppScheme() {
   protocol.handle('webmux', (req) => {
-    const file = uiFile(new URL(req.url).pathname);
+    const { pathname } = new URL(req.url);
+    if (pathname === '/settings.json') return handleSettingsRequest(req);
+    const file = uiFile(pathname);
     if (!file) return new Response('not found', { status: 404 });
     // net.fetch on a file: URL supplies mime types (and reads inside asar);
     // it rejects on a missing file rather than returning a status.
@@ -784,7 +854,7 @@ function createWindow() {
   win = new BaseWindow({
     width: 1400,
     height: 900,
-    backgroundColor: '#16161e',
+    backgroundColor: windowBg(),
     title: 'webmux',
   });
 
@@ -819,6 +889,9 @@ function buildMenu() {
         { label: 'Connections…', accelerator: 'CmdOrCtrl+Shift+O', click: () => userShow(null) },
         { label: 'Reconnect', accelerator: 'CmdOrCtrl+Shift+R', click: reconnectActive },
         { label: 'Open Config File', click: () => shell.openPath(configFile()) },
+        { type: 'separator' },
+        // Opens the page's settings panel; needs a host page on screen.
+        { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => chromeCmd('settings') },
         { type: 'separator' },
         { role: 'hide' },
         { role: 'hideOthers' },

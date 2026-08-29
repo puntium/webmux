@@ -7,11 +7,36 @@
   /* Matches the served page's palette (ui/index.html) — this strip sits
      directly above it and should read as the same chrome. */
   :root {
+    color-scheme: dark;
     --bg: #1f1f2b;
     --border: #34344a;
     --text: #c8c8d8;
     --accent: #7aa2f7;
+    --accent-fg: #10101a;
+    --accent-tint: rgba(122, 162, 247, 0.12);
+    --accent-border: rgba(122, 162, 247, 0.7);
     --accent-yellow: #e0af68;
+    --yellow-tint: rgba(224, 175, 104, 0.12);
+    --yellow-border: rgba(224, 175, 104, 0.6);
+    --danger: #f7768e;
+    --hover: rgba(255, 255, 255, 0.05);
+  }
+  /* Light scheme: main pushes the settings (preload onSettings) and the
+     script below sets data-theme. Values match the page's light tokens. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f4f5f9;
+    --border: #c4c8d8;
+    --text: #343b58;
+    --accent: #2e7de9;
+    --accent-fg: #ffffff;
+    --accent-tint: rgba(46, 125, 233, 0.12);
+    --accent-border: rgba(46, 125, 233, 0.7);
+    --accent-yellow: #8c6c3e;
+    --yellow-tint: rgba(140, 108, 62, 0.14);
+    --yellow-border: rgba(140, 108, 62, 0.6);
+    --danger: #c8283f;
+    --hover: rgba(0, 0, 0, 0.05);
   }
   * { box-sizing: border-box; }
   body {
@@ -39,7 +64,7 @@
     font-weight: 600;
     cursor: pointer;
   }
-  #newTermBtn { background: var(--accent); border: none; color: #10101a; }
+  #newTermBtn { background: var(--accent); border: none; color: var(--accent-fg); }
   #newTermBtn:hover { filter: brightness(1.1); }
   #newFilesBtn { background: none; border: 1px solid var(--border); color: var(--text); opacity: 0.8; }
   #newFilesBtn:hover { opacity: 1; border-color: var(--accent); color: var(--accent); }
@@ -58,16 +83,16 @@
     opacity: 0.7;
     flex: none;
   }
-  .pill:hover { opacity: 1; background: rgba(255, 255, 255, 0.05); }
+  .pill:hover { opacity: 1; background: var(--hover); }
   .pill.active {
     opacity: 1;
-    border-color: rgba(224, 175, 104, 0.6);
-    background: rgba(224, 175, 104, 0.12);
+    border-color: var(--yellow-border);
+    background: var(--yellow-tint);
     color: var(--accent-yellow);
   }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
   .dot.connecting { background: var(--accent-yellow); animation: pulse 1.2s ease-in-out infinite; }
-  .dot.retry, .dot.failed { background: #f7768e; }
+  .dot.retry, .dot.failed { background: var(--danger); }
   .dot.connected { background: #9ece6a; }
   .dot.degraded { background: var(--accent-yellow); }
   @keyframes pulse { 50% { opacity: 0.3; } }
@@ -86,9 +111,9 @@
   .pill.dragging { opacity: 0.3; }
   .pill.drop-before { box-shadow: -4px 0 0 -1px var(--accent); }
   .pill.drop-after { box-shadow: 4px 0 0 -1px var(--accent); }
-  .x:hover { opacity: 1 !important; color: #f7768e; }
-  #connectionsBtn {
-    justify-self: end;
+  .x:hover { opacity: 1 !important; color: var(--danger); }
+  #right { justify-self: end; display: flex; align-items: center; gap: 6px; }
+  #settingsBtn, #connectionsBtn {
     background: none;
     border: 1px solid var(--border);
     border-radius: 999px;
@@ -98,13 +123,15 @@
     cursor: pointer;
     opacity: 0.7;
   }
-  #connectionsBtn:hover { opacity: 1; border-color: var(--accent); color: var(--accent); }
+  #settingsBtn:hover, #connectionsBtn:hover { opacity: 1; border-color: var(--accent); color: var(--accent); }
   #connectionsBtn.active {
     opacity: 1;
-    border-color: rgba(122, 162, 247, 0.7);
-    background: rgba(122, 162, 247, 0.12);
+    border-color: var(--accent-border);
+    background: var(--accent-tint);
     color: var(--accent);
   }
+  #settingsBtn { padding: 4px 9px; font-size: 14px; line-height: 1; }
+  #settingsBtn:disabled { opacity: 0.3; cursor: default; border-color: var(--border); color: var(--text); }
 </style>
 </head>
 <body>
@@ -113,7 +140,10 @@
   <button id="newFilesBtn" title="New file-browser tab in the focused pane" disabled>+ Files</button>
 </div>
 <div id="pills"></div>
-<button id="connectionsBtn" title="Manage connections (⌘⇧O)">Connections</button>
+<div id="right">
+  <button id="settingsBtn" title="Settings (⌘,)" aria-label="Settings" disabled>⚙</button>
+  <button id="connectionsBtn" title="Manage connections (⌘⇧O)">Connections</button>
+</div>
 
 <script>
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
@@ -138,9 +168,9 @@
         <button class="x" title="Disconnect" data-x="${esc(c.name)}">✕</button>
       </span>`).join('');
     document.getElementById('connectionsBtn').classList.toggle('active', snap.active === null);
-    // The tab actions target the visible host page; on the connection page
-    // there is nothing to act on.
-    for (const btn of document.querySelectorAll('#actions button')) {
+    // The tab actions (and the page-drawn settings panel) target the visible
+    // host page; on the connection page there is nothing to act on.
+    for (const btn of document.querySelectorAll('#actions button, #settingsBtn')) {
       btn.disabled = snap.active === null;
     }
   }
@@ -204,6 +234,12 @@
   document.getElementById('connectionsBtn').addEventListener('click', () => webmux.showConn(null));
   document.getElementById('newTermBtn').addEventListener('click', () => webmux.chromeCmd('new-terminal'));
   document.getElementById('newFilesBtn').addEventListener('click', () => webmux.chromeCmd('new-files'));
+  document.getElementById('settingsBtn').addEventListener('click', () => webmux.chromeCmd('settings'));
+
+  // Client-wide settings: only the color scheme matters to this strip.
+  const applySettings = (s) => { document.documentElement.dataset.theme = s.theme; };
+  webmux.onSettings(applySettings);
+  webmux.getSettings().then(applySettings);
 
   webmux.onConns((s) => { snap = s; render(); });
   (async () => { snap = await webmux.getConns(); render(); })();

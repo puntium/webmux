@@ -20,6 +20,7 @@ fs.writeFileSync(path.join(scratch, 'config.json'), JSON.stringify({
 const handlers = {};
 const sent = [];
 const loads = [];
+let appScheme = null; // the webmux:// protocol handler
 
 class FakeWebContents {
   constructor() { this.url = ''; }
@@ -43,6 +44,7 @@ class FakeBaseWindow {
   }
   getContentBounds() { return { x: 0, y: 0, width: 1400, height: 900 }; }
   setTitle(t) { this.title = t; }
+  setBackgroundColor(c) { this.bg = c; }
   on() {}
 }
 
@@ -58,7 +60,7 @@ const stub = {
   shell: { openExternal: () => {}, openPath: () => {} },
   powerMonitor: { on: () => {} },
   ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } },
-  protocol: { registerSchemesAsPrivileged: () => {}, handle: () => {} },
+  protocol: { registerSchemesAsPrivileged: () => {}, handle: (_scheme, fn) => { appScheme = fn; } },
   net: { fetch: () => Promise.reject(new Error('no net in tests')) },
   safeStorage: {
     isEncryptionAvailable: () => true,
@@ -102,6 +104,32 @@ const connState = async (name) =>
   let snap = await handlers['conns:get']();
   assert.strictEqual(snap.active, null, 'starts on the connection page');
   assert.strictEqual(snap.connections.length, 0, 'no auto-connect at startup');
+
+  // -- client-wide settings: /settings.json on the app scheme -------------
+  const settingsReq = (method, body) => appScheme(new Request('webmux://host-abcd1234/settings.json', {
+    method, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }));
+  let res = await settingsReq('GET');
+  assert.deepStrictEqual(await res.json(), { theme: 'dark', unfocusedFade: 40 }, 'default settings');
+  assert.deepStrictEqual(await handlers['settings:get'](), { theme: 'dark', unfocusedFade: 40 }, 'IPC reads the same');
+  sent.length = 0;
+  res = await settingsReq('PUT', { theme: 'light', unfocusedFade: '72.4', junk: 1 });
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(await res.json(), { theme: 'light', unfocusedFade: 72 }, 'PUT sanitizes and echoes');
+  assert.deepStrictEqual(readStore().settings, { theme: 'light', unfocusedFade: 72 }, 'settings persisted');
+  assert.strictEqual(sent.filter((m) => m.ch === 'settings').length, 2, 'pushed to header + connect pages');
+  assert.strictEqual(FakeBaseWindow.last.bg, '#dfe1e8', 'window background follows the theme');
+  res = await settingsReq('PUT', { theme: 'Bad Theme!', unfocusedFade: 500 });
+  assert.deepStrictEqual(await res.json(), { theme: 'light', unfocusedFade: 100 }, 'bad theme kept, fade clamped');
+  res = await appScheme(new Request('webmux://host-abcd1234/settings.json', { method: 'PUT', body: '{nope' }));
+  assert.strictEqual(res.status, 400, 'malformed body rejected');
+  res = await settingsReq('POST', {});
+  assert.strictEqual(res.status, 405, 'only GET/PUT');
+  res = await settingsReq('PUT', { theme: 'dark', unfocusedFade: 40 });
+  assert.deepStrictEqual(readStore().settings, { theme: 'dark', unfocusedFade: 40 });
+  res = await appScheme(new Request('webmux://host-abcd1234/nope.js'));
+  assert.strictEqual(res.status, 404, 'unknown paths still 404');
+  console.log('settings ok');
 
   // -- save / validation ------------------------------------------------
   r = await handlers['profiles:save'](null, { name: '', host: 'x' });

@@ -39,13 +39,63 @@
       font-weight: bold;
       font-style: italic;
     }
+    /* Palette tokens. The dark scheme is the default; the light scheme
+       overrides the same tokens under [data-theme="light"], which
+       settings.js sets on <html> (the terminal canvas gets its palette
+       from THEMES there). Keep both lists in the same order. */
     :root {
+      color-scheme: dark;
       --bg: #16161e;
       --panel: #1f1f2b;
       --border: #34344a;
       --text: #c8c8d8;
       --accent: #7aa2f7;
+      --accent-fg: #10101a;          /* text on an accent-filled button */
       --accent-yellow: #e0af68;
+      --danger: #f7768e;
+      --focus-border: #4a4a68;       /* focused pane outline */
+      --raise: rgba(255, 255, 255, 0.03);        /* pane bar */
+      --raise-strong: rgba(255, 255, 255, 0.1);  /* focused pane bar, on-path rows */
+      --hover: rgba(255, 255, 255, 0.05);
+      --accent-tint: rgba(122, 162, 247, 0.15);       /* active tab */
+      --accent-tint-faint: rgba(122, 162, 247, 0.07); /* drop target wash */
+      --selection-bg: rgba(122, 162, 247, 0.3);       /* file-browser cursor row */
+      --selection-fg: #fff;
+      --yellow-tint: rgba(224, 175, 104, 0.22);       /* active tab in the focused pane */
+      --input-bg: rgba(0, 0, 0, 0.4);
+      --overlay: rgba(0, 0, 0, 0.55);
+      --shadow: rgba(0, 0, 0, 0.6);
+      --ring: rgba(255, 255, 255, 0.12);
+      --scrollbar: rgba(200, 200, 216, 0.22);
+      --scrollbar-hover: rgba(200, 200, 216, 0.4);
+      /* Unfocused-pane fade strength, 0–1 (the "fade %" setting / 100). */
+      --unfocus-fade: 0.4;
+    }
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #dfe1e8;
+      --panel: #f4f5f9;
+      --border: #c4c8d8;
+      --text: #343b58;
+      --accent: #2e7de9;
+      --accent-fg: #ffffff;
+      --accent-yellow: #8c6c3e;
+      --danger: #c8283f;
+      --focus-border: #9ca2bd;
+      --raise: rgba(0, 0, 0, 0.03);
+      --raise-strong: rgba(0, 0, 0, 0.07);
+      --hover: rgba(0, 0, 0, 0.05);
+      --accent-tint: rgba(46, 125, 233, 0.14);
+      --accent-tint-faint: rgba(46, 125, 233, 0.07);
+      --selection-bg: rgba(46, 125, 233, 0.28);
+      --selection-fg: #1b2140;
+      --yellow-tint: rgba(140, 108, 62, 0.18);
+      --input-bg: rgba(255, 255, 255, 0.7);
+      --overlay: rgba(40, 44, 70, 0.35);
+      --shadow: rgba(30, 34, 60, 0.25);
+      --ring: rgba(0, 0, 0, 0.08);
+      --scrollbar: rgba(52, 59, 88, 0.25);
+      --scrollbar-hover: rgba(52, 59, 88, 0.45);
     }
     * { box-sizing: border-box; }
     /* Scrollbars everywhere (terminal viewport included): transparent track,
@@ -55,16 +105,16 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-corner { background: transparent; }
     ::-webkit-scrollbar-thumb {
-      background: rgba(200, 200, 216, 0.22);
+      background: var(--scrollbar);
       border: 3px solid transparent;
       background-clip: padding-box;
       border-radius: 99px;
     }
-    ::-webkit-scrollbar-thumb:hover { background-color: rgba(200, 200, 216, 0.4); }
+    ::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-hover); }
     /* Firefox (no ::-webkit-scrollbar): standard properties. Kept out of
        Chromium, where scrollbar-color would disable the styles above. */
     @supports not selector(::-webkit-scrollbar) {
-      * { scrollbar-width: thin; scrollbar-color: rgba(200, 200, 216, 0.25) transparent; }
+      * { scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; }
     }
     body {
       margin: 0;
@@ -86,7 +136,7 @@
     .electron header { display: none; } /* the client's header strip replaces it */
     header button {
       background: var(--accent);
-      color: #10101a;
+      color: var(--accent-fg);
       border: none;
       border-radius: 6px;
       padding: 6px 14px;
@@ -101,6 +151,8 @@
       color: var(--text);
     }
     header button.secondary:hover { border-color: var(--accent); color: var(--accent); filter: none; }
+    header .spacer { flex: 1; }
+    header button.icon { padding: 5px 9px; font-size: 15px; line-height: 1; }
     /* Transient status toast (clipboard syncs, upload progress, errors) —
        floats so it works with or without the in-page header. Accent-on-dark
        so it can't be missed against the near-black terminal background; it
@@ -111,13 +163,13 @@
       bottom: 18px;
       max-width: min(640px, calc(100vw - 36px));
       background: var(--accent);
-      color: #10101a;
+      color: var(--accent-fg);
       border-radius: 10px;
       padding: 13px 20px;
       font-size: 15px;
       font-weight: 600;
       line-height: 1.3;
-      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.12);
+      box-shadow: 0 10px 32px var(--shadow), 0 0 0 1px var(--ring);
       opacity: 0;
       transform: translateY(10px);
       transition: opacity 0.18s, transform 0.18s;
@@ -161,19 +213,19 @@
       min-height: 0;
     }
     .pane.drop-target { border-color: var(--accent); }
-    .pane.focused { border-color: #4a4a68; }
+    .pane.focused { border-color: var(--focus-border); }
     .pane-bar {
       display: flex;
       align-items: center;
       gap: 4px;
       padding: 3px 6px;
       font-size: 12px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--raise);
       border-bottom: 1px solid var(--border);
       flex: none;
       min-width: 0;
     }
-    .pane.focused .pane-bar { background: rgba(255, 255, 255, 0.1); }
+    .pane.focused .pane-bar { background: var(--raise-strong); }
     .tabs {
       display: flex;
       gap: 2px;
@@ -204,10 +256,10 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .tab:hover { opacity: 0.9; background: rgba(255, 255, 255, 0.05); }
-    .tab.active { opacity: 1; background: rgba(122, 162, 247, 0.15); color: var(--accent); }
+    .tab:hover { opacity: 0.9; background: var(--hover); }
+    .tab.active { opacity: 1; background: var(--accent-tint); color: var(--accent); }
     .pane.focused .tab.active {
-      background: rgba(224, 175, 104, 0.22);
+      background: var(--yellow-tint);
       color: var(--accent-yellow);
       font-weight: 600;
     }
@@ -223,7 +275,7 @@
       opacity: 0.5;
       padding: 0 3px;
     }
-    .tab-close:hover { opacity: 1; color: #f7768e; }
+    .tab-close:hover { opacity: 1; color: var(--danger); }
     .new-tab, .pane-actions button {
       background: none;
       border: none;
@@ -243,7 +295,13 @@
       background: var(--panel);
       transition: filter 0.12s, opacity 0.12s;
     }
-    .pane:not(.focused) .pane-body { filter: brightness(0.72); opacity: 0.85; }
+    /* Unfocused panes dim by the fade setting: both factors scale linearly
+       with --unfocus-fade, so 0 is untouched and 0.4 is the original
+       brightness(0.72) / opacity 0.85. */
+    .pane:not(.focused) .pane-body {
+      filter: brightness(calc(1 - 0.7 * var(--unfocus-fade)));
+      opacity: calc(1 - 0.375 * var(--unfocus-fade));
+    }
     .tile {
       flex: 1;
       display: flex;
@@ -283,9 +341,9 @@
       font-size: 12.5px;
       user-select: none;
     }
-    .files-entry:hover { background: rgba(255, 255, 255, 0.05); }
-    .files-entry.on-path { background: rgba(255, 255, 255, 0.09); }
-    .files-entry.cursor { background: rgba(122, 162, 247, 0.3); color: #fff; }
+    .files-entry:hover { background: var(--hover); }
+    .files-entry.on-path { background: var(--raise-strong); }
+    .files-entry.cursor { background: var(--selection-bg); color: var(--selection-fg); }
     .files-entry.hidden-file .files-name { opacity: 0.55; }
     .files-name {
       flex: 1;
@@ -311,7 +369,7 @@
       min-width: 0;
       font: inherit;
       color: var(--text);
-      background: rgba(0, 0, 0, 0.4);
+      background: var(--input-bg);
       border: 1px solid var(--accent);
       border-radius: 3px;
       padding: 0 3px;
@@ -341,7 +399,7 @@
     }
     .files-col.drop-target, .files-cols.drop-target {
       box-shadow: inset 0 0 0 2px var(--accent);
-      background: rgba(122, 162, 247, 0.07);
+      background: var(--accent-tint-faint);
     }
     /* Wide enough for 80 cols of the 11.5px mono preview (80 × 6.9px = 552px)
        plus body padding, scrollbar, and a little buffer. */
@@ -374,24 +432,60 @@
       white-space: pre;
     }
     .files-preview-body img { max-width: 100%; display: block; }
-    /* Link-click modal */
-    .link-modal-overlay {
+    /* Modals (link chooser, settings): a dimming overlay with a panel box. */
+    .modal-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.55);
+      background: var(--overlay);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 100;
     }
-    .link-modal {
+    .modal {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 16px 18px;
       max-width: min(560px, 90vw);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 8px 32px var(--shadow);
     }
+    .modal button {
+      border: 1px solid var(--border);
+      background: none;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .modal button:hover { border-color: var(--accent); color: var(--accent); }
+    .modal button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--accent-fg);
+      font-weight: 600;
+    }
+    .modal button.primary:hover { filter: brightness(1.1); color: var(--accent-fg); }
+    .modal button.danger {
+      background: #c34f5e;
+      border-color: #c34f5e;
+      color: #fff;
+      font-weight: 600;
+    }
+    .modal button.danger:hover { filter: brightness(1.1); color: #fff; }
+    .modal .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .modal .hint {
+      margin-right: auto;
+      font-size: 11.5px;
+      opacity: 0.55;
+    }
+    /* Link-click modal */
     .link-modal .link-url {
       font-family: 'JetBrainsMono Nerd Font', monospace;
       font-size: 12.5px;
@@ -401,47 +495,49 @@
       max-height: 30vh;
       overflow-y: auto;
     }
-    .link-modal .link-actions {
-      display: flex;
+    /* Settings modal: one row per client-wide setting (settings.js). */
+    .settings-modal { width: min(460px, 90vw); }
+    .settings-modal h2 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+    .settings-modal .lead { margin: 0 0 10px; font-size: 12px; opacity: 0.6; }
+    .setting {
+      display: grid;
+      grid-template-columns: 1fr auto;
       align-items: center;
-      gap: 8px;
-      justify-content: flex-end;
-    }
-    .link-modal .link-hint {
-      margin-right: auto;
-      font-size: 11.5px;
-      opacity: 0.55;
-    }
-    .link-modal button {
-      border: 1px solid var(--border);
-      background: none;
-      color: var(--text);
-      border-radius: 6px;
-      padding: 6px 12px;
+      column-gap: 14px;
+      padding: 11px 0;
+      border-top: 1px solid var(--border);
       font-size: 13px;
+    }
+    .setting .setting-label { font-weight: 600; }
+    .setting .setting-desc { grid-column: 1 / -1; font-size: 11.5px; opacity: 0.6; margin-top: 3px; }
+    .setting .setting-control { display: flex; align-items: center; gap: 8px; }
+    .setting select {
+      font: inherit;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 8px;
       cursor: pointer;
     }
-    .link-modal button:hover { border-color: var(--accent); color: var(--accent); }
-    .link-modal button.primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #10101a;
-      font-weight: 600;
+    .setting select:focus { outline: none; border-color: var(--accent); }
+    .setting input[type="range"] { width: 170px; accent-color: var(--accent); cursor: pointer; }
+    .setting output {
+      min-width: 4ch;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      opacity: 0.8;
     }
-    .link-modal button.primary:hover { filter: brightness(1.1); color: #10101a; }
-    .link-modal button.danger {
-      background: #c34f5e;
-      border-color: #c34f5e;
-      color: #fff;
-      font-weight: 600;
-    }
-    .link-modal button.danger:hover { filter: brightness(1.1); color: #fff; }
+    .settings-modal .actions { margin-top: 12px; }
   </style>
 </head>
 <body>
   <header>
     <button id="new-session">+ New terminal</button>
     <button id="new-files" class="secondary">+ Files</button>
+    <span class="spacer"></span>
+    <button id="settings" class="secondary icon" title="Settings" aria-label="Settings">⚙</button>
   </header>
   <div id="layout"></div>
   <div id="toast" role="status" aria-live="polite"></div>

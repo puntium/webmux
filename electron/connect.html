@@ -4,23 +4,71 @@
 <meta charset="utf-8">
 <title>webmux — connections</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #1e1e1e;
+    --text: #ccc;
+    --text-strong: #eee;
+    --text-muted: #999;
+    --text-faint: #666;
+    --btn-text: #ddd;
+    --btn-bg: #333;
+    --btn-border: #444;
+    --btn-hover: #3c3c3c;
+    --primary: #2d5d8f;
+    --primary-border: #3a6ea5;
+    --primary-hover: #356ba3;
+    --danger: #d98a87;
+    --card: #252525;
+    --card-border: #363636;
+    --input-bg: #1a1a1a;
+    --input-border: #3a3a3a;
+    --pre-bg: #161616;
+    --pre-border: #333;
+    --pre-text: #a08080;
+    --dot: #555;
+  }
+  /* Light scheme (client-wide setting, pushed by main — see the script). */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #dfe1e8;
+    --text: #343b58;
+    --text-strong: #1b2140;
+    --text-muted: #5e6482;
+    --text-faint: #7d84a3;
+    --btn-text: #343b58;
+    --btn-bg: #eef0f5;
+    --btn-border: #c4c8d8;
+    --btn-hover: #e2e5ee;
+    --primary: #2e7de9;
+    --primary-border: #2e7de9;
+    --primary-hover: #1c5fc4;
+    --danger: #c8283f;
+    --card: #f4f5f9;
+    --card-border: #c4c8d8;
+    --input-bg: #ffffff;
+    --input-border: #c4c8d8;
+    --pre-bg: #eceef4;
+    --pre-border: #c4c8d8;
+    --pre-text: #9a3a3a;
+    --dot: #b0b4c8;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    background: #1e1e1e;
-    color: #ccc;
+    background: var(--bg);
+    color: var(--text);
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
     display: flex;
     justify-content: center;
     padding: 48px 24px;
   }
   .wrap { width: 100%; max-width: 620px; }
-  h1 { font-size: 18px; font-weight: 600; color: #eee; margin: 0; }
+  h1 { font-size: 18px; font-weight: 600; color: var(--text-strong); margin: 0; }
   .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
   .topbar .spacer { flex: 1; }
 
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot); flex: none; }
   .dot.connecting { background: #d9a334; animation: pulse 1.2s ease-in-out infinite; }
   .dot.retry { background: #c75450; }
   .dot.failed { background: #c75450; }
@@ -30,61 +78,61 @@
 
   button {
     font: inherit; font-size: 13px;
-    color: #ddd; background: #333; border: 1px solid #444; border-radius: 6px;
+    color: var(--btn-text); background: var(--btn-bg); border: 1px solid var(--btn-border); border-radius: 6px;
     padding: 5px 14px; cursor: pointer;
   }
-  button:hover { background: #3c3c3c; }
-  button.primary { background: #2d5d8f; border-color: #3a6ea5; color: #fff; }
-  button.primary:hover { background: #356ba3; }
-  button.danger { color: #d98a87; }
+  button:hover { background: var(--btn-hover); }
+  button.primary { background: var(--primary); border-color: var(--primary-border); color: #fff; }
+  button.primary:hover { background: var(--primary-hover); }
+  button.danger { color: var(--danger); }
   button.small { font-size: 12px; padding: 3px 10px; }
 
   .card {
-    background: #252525; border: 1px solid #363636; border-radius: 8px;
+    background: var(--card); border: 1px solid var(--card-border); border-radius: 8px;
     padding: 12px 16px; margin-bottom: 10px;
     display: flex; align-items: center; gap: 12px;
   }
-  .card.active { border-color: #3a6ea5; }
+  .card.active { border-color: var(--primary-border); }
   .card .info { flex: 1; min-width: 0; }
-  .card .name { color: #eee; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .card .name .state-label { font-size: 11px; font-weight: 400; color: #888; }
+  .card .name { color: var(--text-strong); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .card .name .state-label { font-size: 11px; font-weight: 400; color: var(--text-muted); }
   .card .detail {
     font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .empty { color: #777; text-align: center; padding: 28px 0 20px; }
+  .empty { color: var(--text-faint); text-align: center; padding: 28px 0 20px; }
 
   form {
-    background: #252525; border: 1px solid #363636; border-radius: 8px;
+    background: var(--card); border: 1px solid var(--card-border); border-radius: 8px;
     padding: 16px; margin-bottom: 10px;
   }
   .row { display: flex; gap: 12px; margin-bottom: 10px; }
   .field { flex: 1; }
   .field.narrow { flex: 0 0 130px; }
-  label { display: block; font-size: 12px; color: #999; margin-bottom: 3px; }
+  label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 3px; }
   input {
     width: 100%;
     font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: #ddd; background: #1a1a1a; border: 1px solid #3a3a3a; border-radius: 6px;
+    color: var(--btn-text); background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 6px;
     padding: 6px 9px;
   }
-  input:focus { outline: none; border-color: #3a6ea5; }
-  input::placeholder { color: #555; }
+  input:focus { outline: none; border-color: var(--primary-border); }
+  input::placeholder { color: var(--text-faint); }
   .form-actions { display: flex; gap: 10px; align-items: center; margin-top: 4px; }
-  .form-error { color: #d98a87; font-size: 12px; }
+  .form-error { color: var(--danger); font-size: 12px; }
   details { margin-bottom: 10px; }
-  summary { font-size: 12px; color: #777; cursor: pointer; margin-bottom: 8px; }
+  summary { font-size: 12px; color: var(--text-faint); cursor: pointer; margin-bottom: 8px; }
 
   .status-detail { margin-top: 18px; }
-  .status-detail h2 { font-size: 13px; color: #bbb; margin: 14px 0 2px; font-weight: 600; }
-  .status-detail p { margin: 4px 0; color: #999; font-size: 13px; }
+  .status-detail h2 { font-size: 13px; color: var(--text-strong); margin: 14px 0 2px; font-weight: 600; }
+  .status-detail p { margin: 4px 0; color: var(--text-muted); font-size: 13px; }
   pre {
     font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: #161616; border: 1px solid #333; border-radius: 6px;
-    padding: 10px 12px; color: #a08080; white-space: pre-wrap;
+    background: var(--pre-bg); border: 1px solid var(--pre-border); border-radius: 6px;
+    padding: 10px 12px; color: var(--pre-text); white-space: pre-wrap;
     max-height: 140px; overflow-y: auto; margin: 8px 0 0;
   }
-  .hint { font-size: 12px; color: #666; margin-top: 22px; }
+  .hint { font-size: 12px; color: var(--text-faint); margin-top: 22px; }
 </style>
 </head>
 <body>
@@ -114,6 +162,11 @@
 
 <script>
   const $ = (id) => document.getElementById(id);
+
+  // Client-wide settings: only the color scheme matters to this page.
+  const applySettings = (s) => { document.documentElement.dataset.theme = s.theme; };
+  webmux.onSettings(applySettings);
+  webmux.getSettings().then(applySettings);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 

@@ -157,6 +157,12 @@ On a deployed host these run under the pushed node:
 - **✕** on a tab closes it — for terminals that kills the session
   (`DELETE /api/sessions/:id`); a shell exiting closes its tab on its own.
 - ⌘R reloads the page: live sessions reattach with state and layout intact.
+- **⚙** in the header (⌘, in the client) opens the settings panel: the color
+  scheme (*Dark mode default* or *Light mode*) and how much unfocused panes
+  fade. These are client-wide — the client keeps them in its `config.json`
+  and every connected host page follows a change at once (the page reads and
+  writes them at `/settings.json` on its own `webmux://` origin; served
+  directly by the server instead, they fall back to localStorage).
 - Click a URL in a terminal (plain text, via `@xterm/addon-web-links`, or an
   OSC 8 hyperlink such as Claude Code's `/login` link) for a chooser: open
   it in your default browser or copy it. Shift-click opens without asking.

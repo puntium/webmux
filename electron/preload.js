@@ -16,5 +16,7 @@ if (location.protocol === 'file:') {
     disconnect: (name) => ipcRenderer.invoke('conns:disconnect', name),
     reorderConns: (names) => ipcRenderer.invoke('conns:reorder', names), // pill drag order
     chromeCmd: (cmd) => ipcRenderer.invoke('conns:cmd', cmd), // header actions → active host page
+    getSettings: () => ipcRenderer.invoke('settings:get'), // client-wide UI settings (theme)
+    onSettings: (cb) => ipcRenderer.on('settings', (_ev, s) => cb(s)),
   });
 }
