@@ -141,7 +141,15 @@ function sshBaseArgs(p) {
     ...(p.passwordEnc
       ? ['-o', 'NumberOfPasswordPrompts=1']
       : ['-o', 'BatchMode=yes']),
-    '-o', 'ServerAliveInterval=15',
+    // Never ride a ControlMaster from ~/.ssh/config: a mux client ignores
+    // the keepalive options below (the master owns the transport, usually
+    // with none), so a dead link would go unnoticed for hours while the
+    // tunnel child sits there looking alive.
+    '-o', 'ControlMaster=no',
+    '-o', 'ControlPath=none',
+    // Dead-link detection bound: 10s × (2+1) ≈ 30s. The in-process server
+    // probe (probeLoop) usually notices sooner.
+    '-o', 'ServerAliveInterval=10',
     '-o', 'ServerAliveCountMax=2',
     '-o', 'ConnectTimeout=10',
     ...(p.sshPort ? ['-p', String(p.sshPort)] : []),
@@ -258,7 +266,14 @@ function updateTitle() {
 function snapshot() {
   return {
     active: activeName,
-    connections: [...conns.values()].map((c) => ({ name: c.name, ...c.status })),
+    // 'degraded': ssh is up and the server answered main's probes, but the
+    // page says its sockets are down — the two views disagree, show that
+    // rather than a green dot over a terminal saying "disconnected".
+    connections: [...conns.values()].map((c) => ({
+      name: c.name,
+      ...c.status,
+      state: c.status.state === 'connected' && c.pageOffline ? 'degraded' : c.status.state,
+    })),
   };
 }
 
@@ -317,19 +332,29 @@ function createConnection(profile) {
     reveal: false, // switch to this view when the server first answers
     retryDelay: 0, // ms; 0 → immediate
     retryTimer: null,
-    generation: 0, // invalidates poll loops / exit handlers of dead tunnels
+    generation: 0, // invalidates probe loops / exit handlers of dead tunnels
     stderrTail: [],
     status: { state: 'connecting' },
     tabCount: 0, // parsed from the page's self-title, for the window title
+    pageOffline: false, // the page reports its session sockets are down (title marker)
+    pageBroken: false, // main-frame load failed; force a reload on the next probe hit
   };
 
   const wc = conn.view.webContents;
-  // The served page titles itself "webmux — N tabs"; harvest the count so
-  // the window title can total tabs across hosts. Anything unparseable
-  // (blank page, error page) counts as zero.
+  // The served page titles itself "webmux — N tabs[ · offline]"; harvest
+  // the count so the window title can total tabs across hosts, and the
+  // offline marker — the page's own verdict on its session sockets, which
+  // is the only channel it has to main (remote pages get no IPC bridge).
+  // Anything unparseable (blank page, error page) counts as zero tabs.
   wc.on('page-title-updated', (_ev, title) => {
     conn.tabCount = Number(/(\d+) tab/.exec(title)?.[1]) || 0;
-    updateTitle();
+    const offline = /· offline$/.test(title);
+    if (offline !== conn.pageOffline) {
+      conn.pageOffline = offline;
+      broadcast(); // pill/card flip between connected and degraded
+    } else {
+      updateTitle();
+    }
   });
   // Only this connection's own webmux:// origin may load in-window.
   wc.on('will-navigate', (ev, url) => {
@@ -341,8 +366,8 @@ function createConnection(profile) {
   // connection page instead of Chromium's error page. -3 is ERR_ABORTED.
   wc.on('did-fail-load', (_ev, code, _desc, url, isMainFrame) => {
     if (!isMainFrame || code === -3 || !url.startsWith('webmux:')) return;
+    conn.pageBroken = true; // the probe loop reloads it once the server answers
     if (activeName === conn.name) show(null);
-    if (conn.tunnel) pollServer(conn, conn.generation);
   });
 
   win.contentView.addChildView(conn.view);
@@ -484,7 +509,7 @@ function spawnTunnel(conn, gen, env, remoteSock) {
     onTunnelDown(conn, gen, code ?? signal);
   });
 
-  pollServer(conn, gen);
+  probeLoop(conn, gen, child);
 }
 
 // A dropped tunnel is handled two ways: if this connect-cycle was ever
@@ -514,21 +539,68 @@ function scheduleRetry(conn, gen, exitCode) {
   conn.retryTimer = setTimeout(() => { conn.retryTimer = null; startTunnel(conn); }, conn.retryDelay);
 }
 
-// Poll through the tunnel until server.js answers, then load the app page
-// into this connection's view (and reveal it if the user asked to connect).
-function pollServer(conn, gen) {
-  if (quitting || gen !== conn.generation || !conn.tunnel) return;
-  const req = http.get({ host: '127.0.0.1', port: conn.localPort, path: '/', timeout: 2000 }, (res) => {
-    res.resume();
-    if (gen !== conn.generation) return;
-    conn.retryDelay = 0; // healthy — next failure retries immediately
-    conn.hadConnection = true; // from here on, a drop is an interruption → auto-retry
-    setConnStatus(conn, { state: 'connected' });
-    if (!pageLive(conn)) conn.view.webContents.loadURL(appUrl(conn));
-    if (conn.reveal) { conn.reveal = false; show(conn.name); }
-  });
-  req.on('timeout', () => req.destroy());
-  req.on('error', () => setTimeout(() => pollServer(conn, gen), 500));
+// Probe server.js through the tunnel for as long as this tunnel child lives:
+// first to learn when the server is up (→ load the app page), then as a
+// liveness check. `ssh -N` only knows about its own link — it stays alive,
+// and looked "connected", while the remote server was dead or restarted, or
+// while a half-open link waited out the keepalives. A local connect to the
+// forward always succeeds (ssh accepts it), so a dead link shows up as a
+// request timeout rather than a refusal; either way, enough consecutive
+// misses kill the tunnel and let the ordinary exit → retry → redeploy path
+// heal things (the remote starter restarts a dead server).
+const PROBE_TIMEOUT = 2000; // ms per request
+const PROBE_INTERVAL = 5000; // ms between probes once connected
+const PROBE_RETRY = 500; // ms between probes before the server first answers
+const PROBE_MISSES = 3; // consecutive misses while connected → tunnel is dead
+const PROBE_FIRST_ANSWER = 20000; // ms for a fresh tunnel to reach the server at all
+
+function probeLoop(conn, gen, child) {
+  let misses = 0;
+  const started = Date.now();
+  const live = () => !quitting && gen === conn.generation && conn.tunnel === child;
+  const giveUp = (why) => {
+    conn.stderrTail = conn.stderrTail.concat(why).slice(-8);
+    conn.retryDelay = 0; // a link we declared dead should be retried at once
+    child.kill(); // 'exit' → onTunnelDown decides retry vs failed
+  };
+  const probe = () => {
+    if (!live()) return;
+    const req = http.get({ host: '127.0.0.1', port: conn.localPort, path: '/', timeout: PROBE_TIMEOUT }, (res) => {
+      res.resume();
+      if (!live()) return;
+      misses = 0;
+      onServerUp(conn);
+      setTimeout(probe, PROBE_INTERVAL);
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => {
+      if (!live()) return;
+      if (conn.status.state !== 'connected') {
+        // Not up yet. remote-start just verified the socket answers, so a
+        // forward that never reaches it is broken (ssh's "connect failed"
+        // lines land in stderrTail for the status detail).
+        if (Date.now() - started > PROBE_FIRST_ANSWER) return giveUp('server did not answer through the tunnel');
+        return setTimeout(probe, PROBE_RETRY);
+      }
+      if (++misses >= PROBE_MISSES) return giveUp('server unreachable through the tunnel — reconnecting');
+      setTimeout(probe, PROBE_INTERVAL);
+    });
+  };
+  probe();
+}
+
+// A probe got through: mark the connection healthy (only broadcasting on an
+// actual change — this runs every few seconds), load the app page into the
+// view if it isn't there, and reveal it if the user asked to connect.
+function onServerUp(conn) {
+  conn.retryDelay = 0; // healthy — next failure retries immediately
+  conn.hadConnection = true; // from here on, a drop is an interruption → auto-retry
+  if (conn.status.state !== 'connected') setConnStatus(conn, { state: 'connected' });
+  if (conn.pageBroken || !pageLive(conn)) {
+    conn.pageBroken = false;
+    conn.view.webContents.loadURL(appUrl(conn));
+  }
+  if (conn.reveal) { conn.reveal = false; show(conn.name); }
 }
 
 function reconnectActive() {

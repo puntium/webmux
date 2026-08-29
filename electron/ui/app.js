@@ -131,10 +131,23 @@ function render() {
   // xterm needs its element in the DOM before open(); open any new tiles now.
   for (const tile of tiles.values()) tile.openIfNeeded();
   fitAll();
-  // The tab count lives in the title: the browser shows it on the tab, and
-  // the Electron client parses it to total tabs across hosts in the window
-  // title (main.js page-title-updated).
-  document.title = `webmux — ${tiles.size} tab${tiles.size === 1 ? '' : 's'}`;
+  updateTitle();
+}
+
+// The title is this page's one channel to the Electron client (main.js
+// page-title-updated): the tab count, which it totals across hosts in the
+// window title, and an offline marker while any session socket is down and
+// retrying — its pill would otherwise stay green over a terminal saying
+// "disconnected", because the ssh tunnel it supervises can outlive the
+// server behind it.
+let linkDown = false;
+function updateTitle() {
+  document.title = `webmux — ${tiles.size} tab${tiles.size === 1 ? '' : 's'}${linkDown ? ' · offline' : ''}`;
+}
+function setLinkDown(down) {
+  if (linkDown === down) return;
+  linkDown = down;
+  updateTitle();
 }
 
 function buildNode(node) {
@@ -651,6 +664,7 @@ function makeTile(sessionId) {
       ws.onopen = () => {
         this.online = true;
         this.retryDelay = 0;
+        setLinkDown(false);
         this.fitAndReport();
       };
       ws.onmessage = (ev) => {
@@ -691,6 +705,7 @@ function makeTile(sessionId) {
       };
       ws.onclose = () => {
         if (this.dead || this.exited) return;
+        setLinkDown(true); // cleared by whichever socket next opens
         if (this.online) {
           this.online = false;
           term.write('\r\n\x1b[33m[disconnected — reconnecting…]\x1b[0m\r\n');

@@ -69,6 +69,7 @@
   .dot.connecting { background: var(--accent-yellow); animation: pulse 1.2s ease-in-out infinite; }
   .dot.retry, .dot.failed { background: #f7768e; }
   .dot.connected { background: #9ece6a; }
+  .dot.degraded { background: var(--accent-yellow); }
   @keyframes pulse { 50% { opacity: 0.3; } }
   .x {
     background: none;
@@ -123,6 +124,7 @@
   const stateTip = (c) => ({
     connecting: 'connecting…',
     connected: 'connected',
+    degraded: 'server unreachable — page retrying',
     retry: `interrupted — retrying${c.delay ? ` in ${c.delay}s` : ''}`,
     failed: 'connection failed',
   }[c.state] || c.state);

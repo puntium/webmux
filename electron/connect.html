@@ -25,6 +25,7 @@
   .dot.retry { background: #c75450; }
   .dot.failed { background: #c75450; }
   .dot.connected { background: #55a868; }
+  .dot.degraded { background: #d9a334; }
   @keyframes pulse { 50% { opacity: 0.3; } }
 
   button {
@@ -133,15 +134,19 @@
   const STATE_LABEL = {
     connecting: 'connecting…',
     connected: 'connected',
+    degraded: 'degraded',
     retry: 'retrying…',
     failed: 'failed',
   };
+
+  // Tunnel up, page still showing = Disconnect/Show; anything in flight = Cancel.
+  const isUp = (conn) => conn && (conn.state === 'connected' || conn.state === 'degraded');
 
   function cardButtons(p, conn) {
     const b = [];
     b.push(`<button class="small danger" data-del="${esc(p.name)}">${confirmDelete === p.name ? 'Sure?' : 'Delete'}</button>`);
     b.push(`<button class="small" data-edit="${esc(p.name)}">Edit</button>`);
-    if (conn && conn.state === 'connected') {
+    if (isUp(conn)) {
       b.push(`<button class="small" data-disconnect="${esc(p.name)}">Disconnect</button>`);
       b.push(`<button class="small primary" data-connect="${esc(p.name)}">Show</button>`);
     } else if (conn && (conn.state === 'connecting' || conn.state === 'retry')) {
@@ -161,7 +166,7 @@
     $('list').innerHTML = profiles.map((p) => {
       const conn = connOf(p.name);
       return `
-      <div class="card${conn && conn.state === 'connected' ? ' active' : ''}">
+      <div class="card${isUp(conn) ? ' active' : ''}">
         <div class="info">
           <div class="name">
             ${conn ? `<span class="dot ${esc(conn.state)}"></span>` : ''}
@@ -256,9 +261,12 @@
   function renderStatus() {
     let html = '';
     for (const c of snap.connections) {
-      if (!['connecting', 'retry', 'failed'].includes(c.state)) continue;
+      if (!['connecting', 'degraded', 'retry', 'failed'].includes(c.state)) continue;
       html += `<h2><span class="dot ${esc(c.state)}" style="display:inline-block;margin-right:6px"></span>${esc(c.name)}</h2>`;
       if (c.msg) html += `<p>${esc(c.msg)}</p>`;
+      if (c.state === 'degraded') {
+        html += `<p>The tunnel is up but the page's session sockets are down and retrying — the server may be restarting. The client reconnects on its own if the server stops answering.</p>`;
+      }
       if (c.state === 'retry') {
         html += `<p>Connection interrupted — retrying in ${esc(c.delay ?? '?')}s… (sessions keep running on the server)</p>`;
       }

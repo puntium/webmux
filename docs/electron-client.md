@@ -125,10 +125,13 @@ A self-contained npm package so the server install never pulls Electron.
     wrong password fail fast into retry. Blank on edit keeps the stored
     password; a "clear saved" checkbox removes it.
   - **Tunnel**: `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o
-    ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ConnectTimeout=10 -L
+    ControlMaster=no -o ControlPath=none -o ServerAliveInterval=10 -o
+    ServerAliveCountMax=2 -o ConnectTimeout=10 -L
     127.0.0.1:<local>:<remote socket> <host>`. BatchMode means key auth
     only — a passphrase prompt would hang a headless spawn; stderr is kept
-    for the boot page.
+    for the boot page. ControlMaster is forced off: a mux client from
+    `~/.ssh/config` would ignore the keepalive options and sit alive on a
+    dead link for hours.
   - **Supervision**: auto-retry (backoff 1s → 15s cap) happens *only* when
     an established connection is interrupted — a connect-cycle that reached
     'connected' and then dropped. A cycle that never connected (typo'd
@@ -138,6 +141,20 @@ A self-contained npm package so the server install never pulls Electron.
     ~30s. `powerMonitor` `resume` kills the stale tunnel on lid-open so an
     interrupted session reconnects at once instead of waiting for the
     keepalive timeout.
+  - **Liveness**: `ssh -N` only knows about its own link — it stays alive
+    (and used to look "connected") while the remote server was dead or
+    restarted, or a half-open link waited out the keepalives. So main
+    probes `GET /` through the tunnel every 5s for as long as the tunnel
+    child lives (2s timeout; a dead link shows up as a timeout because ssh
+    accepts the local connect regardless). Three consecutive misses kill
+    the tunnel and let the ordinary exit → retry → redeploy path heal it —
+    the remote starter restarts a dead server. A fresh tunnel that never
+    reaches the server within 20s is killed the same way. Independently,
+    the page marks its title `· offline` while any session socket is down
+    and retrying; main parses that (it already harvests the tab count from
+    the title, and remote pages have no IPC bridge) into a `degraded` pill
+    state — amber — so the chrome never shows green over a terminal saying
+    "disconnected".
   - **Window**: a `BaseWindow` holding a 38px header view (`header.html`)
     plus one `WebContentsView` per connection and one for the connection
     page (`connect.html`); exactly one content view is visible. Connecting
