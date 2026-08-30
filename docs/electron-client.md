@@ -169,10 +169,42 @@ A self-contained npm package so the server install never pulls Electron.
     typing in a terminal is the classic Electron footgun); links open in the
     default browser (`setWindowOpenHandler` + `will-navigate` guard);
     standard Edit menu so Cmd+C/V clipboard roles work.
+- **Connection log** (`log.js`, `logs.html`): a client-wide record of
+  connection setup, teardown, and recovery, for diagnosing the "why did
+  my host go amber" class of question after the fact. Two sinks — a
+  3000-entry in-memory ring the log window tails live, and an append-only
+  `<userData>/logs/webmux.log` (rolled to `.1` at 1 MB) — fed from one
+  `push()`; each entry is `{ seq, t, level, src, conn, msg, data }` and
+  the file gets one `<iso> LEVEL [conn] msg k=v…` line per entry.
+  - **Main logs**: connect/reconnect requests (host, instance, port, auth
+    *mode* — never the password or the spawn env), each deploy step once
+    (progress percentages collapse onto their step), ssh stderr lines,
+    deploy result (reuse/started, socket, elapsed), tunnel spawn (pid,
+    full argv) and exit (code/signal, uptime), every probe miss and the
+    give-up that kills the tunnel, every state transition, retry
+    scheduling and firing, the page's offline/online verdict, page load
+    failures, user disconnects, lid-open tunnel kills, and quit.
+  - **Pages log** over `POST /log` on their own `webmux://` origin
+    (`ui/log.js`, batched): session-socket connecting/open/reopened,
+    dropped (close code, reason, uptime, retry delay), session exit,
+    link down/up transitions, and the initial session-list fetch. The
+    bundle's protocol handler tags the batch with the connection that
+    owns the origin, sanitizes it (level whitelist, clipped strings,
+    plain keys only, 50 per batch), and merges it. Nothing flows back:
+    the log names other hosts, which a page must never see — so the
+    window is not a page, and `POST /log/open` (what the settings panel's
+    *Open log…* hits) can only pop it, not read it.
+  - **Log window** (`logs.html`, a client-owned `BrowserWindow` with the
+    file:-only bridge; ⌘⇧L, the connect page's *Log* button, or the
+    page settings panel): live tail with follow-on-scroll, host/level/text
+    filters, *Copy visible* (⌘⇧C) / *Copy all* in file format, *Reveal
+    file*, and *Clear* (ring only — the file is kept). One instance;
+    opening again focuses it.
 - `connect.html` + `header.html` + `preload.js` — the connection manager
   (list / add / edit / delete profiles, per-profile connect/disconnect,
-  live tunnel status with ssh stderr for diagnosis) and the pill strip.
-  Both talk to main over a contextBridge IPC API that the preload exposes
+  live tunnel status with ssh stderr for diagnosis) and the pill strip;
+  `logs.html` is the log window. All three talk to main over a
+  contextBridge IPC API that the preload exposes
   **only to `file:` pages** — the remote app pages must not be able to
   read or mutate profiles (they contain ssh arguments) or see the other
   connections.

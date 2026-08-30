@@ -29,8 +29,8 @@
 // the preload bridge) and stored in <userData>/config.json.
 
 const {
-  app, BaseWindow, WebContentsView, Menu, shell, powerMonitor, ipcMain, safeStorage,
-  protocol, net: electronNet,
+  app, BaseWindow, BrowserWindow, WebContentsView, Menu, shell, powerMonitor, ipcMain,
+  safeStorage, protocol, net: electronNet,
 } = require('electron');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
@@ -40,6 +40,7 @@ const net = require('net');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { deploy } = require('./deploy');
+const log = require('./log');
 
 // The app pages load on webmux:// (served from the bundle by the handler in
 // app.whenReady). standard+secure gives the scheme real origins — per-host
@@ -308,7 +309,14 @@ function broadcast() {
 }
 
 function setConnStatus(conn, s) {
+  const prev = conn.status;
   conn.status = { stderr: conn.stderrTail.join('\n'), ...s };
+  // Every state change is a log line; same-state updates (deploy progress
+  // messages, retry countdowns) are logged by their producers as they see fit.
+  if (prev.state !== s.state) {
+    const level = s.state === 'failed' ? 'error' : s.state === 'retry' ? 'warn' : 'info';
+    log[level](conn.name, `state ${prev.state} → ${s.state}`, s.msg ? { msg: s.msg } : undefined);
+  }
   broadcast();
 }
 
@@ -372,6 +380,9 @@ function createConnection(profile) {
     const offline = /· offline$/.test(title);
     if (offline !== conn.pageOffline) {
       conn.pageOffline = offline;
+      log[offline ? 'warn' : 'info'](conn.name, offline
+        ? 'page reports its session sockets are down (degraded)'
+        : 'page reports its session sockets are back');
       broadcast(); // pill/card flip between connected and degraded
     } else {
       updateTitle();
@@ -385,8 +396,9 @@ function createConnection(profile) {
   });
   // Cmd+R while the page is broken, or a load race: fall back to the
   // connection page instead of Chromium's error page. -3 is ERR_ABORTED.
-  wc.on('did-fail-load', (_ev, code, _desc, url, isMainFrame) => {
+  wc.on('did-fail-load', (_ev, code, desc, url, isMainFrame) => {
     if (!isMainFrame || code === -3 || !url.startsWith('webmux:')) return;
+    log.warn(conn.name, 'app page failed to load', { code, desc });
     conn.pageBroken = true; // the probe loop reloads it once the server answers
     if (activeName === conn.name) show(null);
   });
@@ -397,18 +409,28 @@ function createConnection(profile) {
   return conn;
 }
 
-function stopTunnel(conn) {
+function stopTunnel(conn, why) {
   conn.generation++; // orphan any pending retry/poll/exit handling
+  if (conn.retryTimer) log.info(conn.name, `pending retry cancelled (${why})`);
   clearTimeout(conn.retryTimer);
   conn.retryTimer = null;
-  if (conn.discovery) { conn.discovery.kill(); conn.discovery = null; }
-  if (conn.tunnel) { conn.tunnel.kill(); conn.tunnel = null; }
+  if (conn.discovery) {
+    log.info(conn.name, `deploy step killed (${why})`, { pid: conn.discovery.pid });
+    conn.discovery.kill();
+    conn.discovery = null;
+  }
+  if (conn.tunnel) {
+    log.info(conn.name, `tunnel killed (${why})`, { pid: conn.tunnel.pid });
+    conn.tunnel.kill();
+    conn.tunnel = null;
+  }
 }
 
-function disconnect(name) {
+function disconnect(name, why = 'disconnect') {
   const conn = conns.get(name);
   if (!conn) return;
-  stopTunnel(conn);
+  log.info(conn.name, `disconnecting (${why})`, { state: conn.status.state });
+  stopTunnel(conn, why);
   conns.delete(name);
   if (win) win.contentView.removeChildView(conn.view);
   conn.view.webContents.close();
@@ -416,14 +438,24 @@ function disconnect(name) {
   else broadcast();
 }
 
-async function connectConn(conn) {
-  stopTunnel(conn);
+async function connectConn(conn, why = 'connect') {
+  stopTunnel(conn, why);
   conn.hadConnection = false; // a fresh manual attempt parks on failure, no retry loop
   store.lastProfile = conn.name;
   conn.localPort = await pickPort(conn.profile);
   portByProfile.set(conn.name, conn.localPort);
   saveStore(); // lastProfile
   conn.retryDelay = 0;
+  const { host, sshPort, instance, identityFile, extraOptions, passwordEnc } = conn.profile;
+  log.info(conn.name, `${why} requested`, {
+    host,
+    instance: instance || 'default',
+    localPort: conn.localPort,
+    ...(sshPort ? { sshPort } : {}),
+    ...(identityFile ? { identityFile } : {}),
+    ...(extraOptions ? { extraOptions } : {}),
+    auth: passwordEnc ? 'password' : 'key',
+  });
   startTunnel(conn);
 }
 
@@ -449,6 +481,7 @@ function startTunnel(conn) {
       // won't help — park in the failed state with no timer and let the
       // user re-enter the password in the profile.
       conn.stderrTail = [String(err.message || err)];
+      log.error(conn.name, 'saved password could not be decrypted', { error: String(err.message || err) });
       setConnStatus(conn, { state: 'failed', msg: 'saved password could not be decrypted — edit the profile and re-enter it' });
       surfaceFailure(conn);
       return;
@@ -468,6 +501,8 @@ function startTunnel(conn) {
 // child parks in conn.discovery (stopTunnel kills it) and each step
 // rechecks the generation.
 async function runDeploy(conn, gen, env, instance) {
+  const started = Date.now();
+  let lastStep = ''; // progress messages differ only by a percentage; log each step once
   const ctx = {
     spawnSsh: (command) => {
       const child = spawn(
@@ -476,13 +511,21 @@ async function runDeploy(conn, gen, env, instance) {
         { stdio: ['pipe', 'pipe', 'pipe'], env },
       );
       conn.discovery = child;
-      child.on('exit', () => { if (conn.discovery === child) conn.discovery = null; });
+      log.debug(conn.name, 'deploy step: ssh', { pid: child.pid, command: command.slice(0, 120) });
+      child.on('exit', (code, signal) => {
+        log.debug(conn.name, 'deploy step: ssh exited', { pid: child.pid, code, signal });
+        if (conn.discovery === child) conn.discovery = null;
+      });
       return child;
     },
     status: (msg) => {
-      if (!quitting && gen === conn.generation) setConnStatus(conn, { state: 'connecting', msg });
+      if (quitting || gen !== conn.generation) return;
+      const step = msg.replace(/\s*\d+%.*$/, '');
+      if (step !== lastStep) { lastStep = step; log.info(conn.name, `deploy: ${msg}`); }
+      setConnStatus(conn, { state: 'connecting', msg });
     },
     stderr: (line) => {
+      log.warn(conn.name, 'ssh: ' + line);
       conn.stderrTail = conn.stderrTail.concat(line).slice(-8);
     },
     isLive: () => !quitting && gen === conn.generation,
@@ -501,9 +544,15 @@ async function runDeploy(conn, gen, env, instance) {
       nodeCacheDir: path.join(app.getPath('userData'), 'node-cache'),
     });
     if (quitting || gen !== conn.generation) return;
+    log.info(conn.name, `deploy done: server ${result.action || 'ready'}`, {
+      ms: Date.now() - started,
+      socket: result.advert?.socket,
+      pid: result.advert?.pid,
+    });
     spawnTunnel(conn, gen, env, result.advert.socket);
   } catch (err) {
     if (err.cancelled || quitting || gen !== conn.generation) return;
+    log.error(conn.name, 'deploy failed', { ms: Date.now() - started, error: String(err.message || err) });
     conn.stderrTail = conn.stderrTail.concat(String(err.message || err)).slice(-8);
     onTunnelDown(conn, gen);
   }
@@ -511,21 +560,31 @@ async function runDeploy(conn, gen, env, instance) {
 
 function spawnTunnel(conn, gen, env, remoteSock) {
   if (quitting || gen !== conn.generation) return;
-  const child = spawn('ssh', sshTunnelArgs(conn.profile, conn.localPort, remoteSock), { stdio: ['ignore', 'ignore', 'pipe'], env });
+  const args = sshTunnelArgs(conn.profile, conn.localPort, remoteSock);
+  const child = spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'], env });
   conn.tunnel = child;
+  const spawnedAt = Date.now();
+  log.info(conn.name, 'tunnel spawned', { pid: child.pid, localPort: conn.localPort, remoteSock, cmd: `ssh ${args.join(' ')}` });
 
   child.stderr.on('data', (chunk) => {
-    conn.stderrTail = conn.stderrTail.concat(String(chunk).split('\n')).filter(Boolean).slice(-8);
+    const lines = String(chunk).split('\n').filter(Boolean);
+    for (const line of lines) log.warn(conn.name, 'ssh: ' + line);
+    conn.stderrTail = conn.stderrTail.concat(lines).slice(-8);
   });
 
   child.on('error', (err) => {
     // spawn failure (no ssh binary) — 'exit' won't always follow
+    log.error(conn.name, 'tunnel spawn error', { error: String(err.message || err) });
     conn.stderrTail.push(String(err.message || err));
     if (conn.tunnel === child) { conn.tunnel = null; onTunnelDown(conn, gen); }
   });
 
   child.on('exit', (code, signal) => {
-    if (conn.tunnel === child) conn.tunnel = null; // a newer tunnel may already exist
+    const stale = conn.tunnel !== child; // a newer tunnel may already exist
+    log[stale || quitting ? 'info' : 'warn'](conn.name, `tunnel exited${stale ? ' (superseded)' : ''}`, {
+      pid: child.pid, code, signal, uptimeMs: Date.now() - spawnedAt,
+    });
+    if (!stale) conn.tunnel = null;
     if (quitting) return;
     onTunnelDown(conn, gen, code ?? signal);
   });
@@ -551,13 +610,18 @@ function onTunnelDown(conn, gen, exitCode) {
 function scheduleRetry(conn, gen, exitCode) {
   if (quitting || gen !== conn.generation || conn.retryTimer) return;
   conn.retryDelay = Math.min(Math.max(conn.retryDelay * 2, 1000), 15000);
+  log.warn(conn.name, `interrupted — retry in ${conn.retryDelay / 1000}s`, exitCode !== undefined ? { exitCode } : undefined);
   setConnStatus(conn, {
     state: 'retry',
     msg: exitCode !== undefined ? `ssh exited (${exitCode})` : 'connection failed',
     delay: Math.round(conn.retryDelay / 1000),
   });
   surfaceFailure(conn); // no-op while this connection's page is live
-  conn.retryTimer = setTimeout(() => { conn.retryTimer = null; startTunnel(conn); }, conn.retryDelay);
+  conn.retryTimer = setTimeout(() => {
+    conn.retryTimer = null;
+    log.info(conn.name, 'retrying');
+    startTunnel(conn);
+  }, conn.retryDelay);
 }
 
 // Probe server.js through the tunnel for as long as this tunnel child lives:
@@ -579,7 +643,9 @@ function probeLoop(conn, gen, child) {
   let misses = 0;
   const started = Date.now();
   const live = () => !quitting && gen === conn.generation && conn.tunnel === child;
+  let answered = false; // first successful probe of this tunnel
   const giveUp = (why) => {
+    log.error(conn.name, `probe: ${why}`, { misses, pid: child.pid, afterMs: Date.now() - started });
     conn.stderrTail = conn.stderrTail.concat(why).slice(-8);
     conn.retryDelay = 0; // a link we declared dead should be retried at once
     child.kill(); // 'exit' → onTunnelDown decides retry vs failed
@@ -589,12 +655,18 @@ function probeLoop(conn, gen, child) {
     const req = http.get({ host: '127.0.0.1', port: conn.localPort, path: '/', timeout: PROBE_TIMEOUT }, (res) => {
       res.resume();
       if (!live()) return;
+      if (!answered) {
+        answered = true;
+        log.info(conn.name, 'probe: server answered through the tunnel', { afterMs: Date.now() - started, status: res.statusCode });
+      } else if (misses) {
+        log.info(conn.name, 'probe: server answering again', { misses });
+      }
       misses = 0;
       onServerUp(conn);
       setTimeout(probe, PROBE_INTERVAL);
     });
     req.on('timeout', () => req.destroy());
-    req.on('error', () => {
+    req.on('error', (err) => {
       if (!live()) return;
       if (conn.status.state !== 'connected') {
         // Not up yet. remote-start just verified the socket answers, so a
@@ -603,7 +675,9 @@ function probeLoop(conn, gen, child) {
         if (Date.now() - started > PROBE_FIRST_ANSWER) return giveUp('server did not answer through the tunnel');
         return setTimeout(probe, PROBE_RETRY);
       }
-      if (++misses >= PROBE_MISSES) return giveUp('server unreachable through the tunnel — reconnecting');
+      misses++;
+      log.warn(conn.name, `probe missed (${misses}/${PROBE_MISSES})`, { error: err.code || err.message });
+      if (misses >= PROBE_MISSES) return giveUp('server unreachable through the tunnel — reconnecting');
       setTimeout(probe, PROBE_INTERVAL);
     });
   };
@@ -618,6 +692,7 @@ function onServerUp(conn) {
   conn.hadConnection = true; // from here on, a drop is an interruption → auto-retry
   if (conn.status.state !== 'connected') setConnStatus(conn, { state: 'connected' });
   if (conn.pageBroken || !pageLive(conn)) {
+    log.info(conn.name, conn.pageBroken ? 'reloading app page' : 'loading app page', { url: appUrl(conn) });
     conn.pageBroken = false;
     conn.view.webContents.loadURL(appUrl(conn));
   }
@@ -628,7 +703,7 @@ function reconnectActive() {
   const conn = activeName && conns.get(activeName);
   if (!conn) { show(null); return; }
   conn.profile = findProfile(conn.name) || conn.profile;
-  connectConn(conn);
+  connectConn(conn, 'reconnect');
 }
 
 // ---------------------------------------------------------------------------
@@ -700,7 +775,7 @@ function registerIpc() {
   ipcMain.handle('profiles:delete', (_ev, name) => {
     store.profiles = store.profiles.filter((p) => p.name !== name);
     if (store.lastProfile === name) store.lastProfile = null;
-    disconnect(name); // no-op if not connected
+    disconnect(name, 'profile deleted'); // no-op if not connected
     saveStore();
     return { ok: true };
   });
@@ -723,7 +798,7 @@ function registerIpc() {
 
   ipcMain.handle('conns:get', () => snapshot());
   ipcMain.handle('conns:show', (_ev, name) => { userShow(name); return { ok: true }; });
-  ipcMain.handle('conns:disconnect', (_ev, name) => { disconnect(name); return { ok: true }; });
+  ipcMain.handle('conns:disconnect', (_ev, name) => { disconnect(name, 'user'); return { ok: true }; });
 
   // Pills are drag-reorderable; the Map's insertion order is the pill order
   // (and the Cmd+<n> order), so rebuild it in the requested sequence. Names
@@ -743,6 +818,16 @@ function registerIpc() {
   ipcMain.handle('conns:cmd', (_ev, cmd) => chromeCmd(cmd));
 
   ipcMain.handle('settings:get', () => store.settings);
+
+  // Log window (logs.html): the ring since a sequence number, a live feed
+  // (pushLogEntry), and the file for when the ring isn't enough.
+  ipcMain.handle('log:get', (_ev, afterSeq) => ({ entries: log.since(Number(afterSeq) || 0), file: log.logFile() }));
+  ipcMain.handle('log:clear', () => { log.clear(); return { ok: true }; });
+  ipcMain.handle('log:reveal', () => {
+    if (log.logFile()) shell.showItemInFolder(log.logFile());
+    return { ok: true };
+  });
+  ipcMain.handle('log:open', () => { openLogWindow(); return { ok: true }; });
 }
 
 // Header-strip and menu actions relayed into the visible host page as DOM
@@ -813,13 +898,50 @@ const jsonResponse = (obj, status = 200) => new Response(JSON.stringify(obj), {
 function broadcastSettings() {
   const s = store.settings;
   if (win) win.setBackgroundColor(windowBg());
-  for (const view of [headerView, connectView]) {
+  for (const view of [headerView, connectView, logWin]) {
     if (view) view.webContents.send('settings', s);
   }
   const js = `window.dispatchEvent(new CustomEvent('webmux-settings', { detail: ${JSON.stringify(s)} }))`;
   for (const conn of conns.values()) {
     if (pageLive(conn)) conn.view.webContents.executeJavaScript(js).catch(() => {});
   }
+}
+
+// The served pages have no IPC bridge, so their connection events (socket
+// open/close, reconnect scheduling) arrive as POST /log on their own
+// webmux:// origin — a batch of { level, msg, data } entries, tagged here
+// with the connection that origin belongs to. Nothing flows back to the
+// page: the log holds other hosts' names, which a page must not see.
+const PAGE_LOG_BATCH = 50;
+
+function connForOrigin(reqUrl) {
+  // (URL.origin is the literal 'null' for a custom scheme — build it by hand.)
+  const u = new URL(reqUrl);
+  const origin = `${u.protocol}//${u.host}/`;
+  for (const conn of conns.values()) if (appOrigin(conn) === origin) return conn.name;
+  return u.host; // a page whose connection is already gone
+}
+
+async function handlePageLog(req) {
+  if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+  let body;
+  try { body = await req.json(); } catch { return new Response('bad json', { status: 400 }); }
+  const conn = connForOrigin(req.url);
+  const list = (Array.isArray(body) ? body : [body]).slice(0, PAGE_LOG_BATCH);
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    log.push({ level: e.level, conn, msg: e.msg, data: e.data, src: 'page' });
+  }
+  return jsonResponse({ ok: true });
+}
+
+// POST /log/open: the page's settings panel asks for the log window. The
+// window is a client-owned file: page, so a remote page (or anything it
+// renders) gains nothing from being able to pop it.
+function handlePageLogOpen(req) {
+  if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+  openLogWindow();
+  return jsonResponse({ ok: true });
 }
 
 // /settings.json on any webmux:// origin: GET reads, PUT merges (unknown or
@@ -839,6 +961,8 @@ function registerAppScheme() {
   protocol.handle('webmux', (req) => {
     const { pathname } = new URL(req.url);
     if (pathname === '/settings.json') return handleSettingsRequest(req);
+    if (pathname === '/log') return handlePageLog(req);
+    if (pathname === '/log/open') return handlePageLogOpen(req);
     const file = uiFile(pathname);
     if (!file) return new Response('not found', { status: 404 });
     // net.fetch on a file: URL supplies mime types (and reads inside asar);
@@ -881,6 +1005,39 @@ function createWindow() {
   layoutViews();
 }
 
+// ---------------------------------------------------------------------------
+// Log window: a separate client-owned window (file: page, so it has the
+// bridge) tailing the connection log. One instance; opening again focuses
+// it. Entries stream over the 'log' channel as they happen.
+// ---------------------------------------------------------------------------
+
+let logWin = null;
+
+function openLogWindow() {
+  if (logWin) { logWin.focus(); return; }
+  logWin = new BrowserWindow({
+    width: 900,
+    height: 560,
+    title: 'webmux — connection log',
+    backgroundColor: windowBg(),
+    webPreferences: { preload: path.join(__dirname, 'preload.js') },
+  });
+  logWin.webContents.on('will-navigate', (ev, url) => {
+    if (url.startsWith('file:')) return;
+    ev.preventDefault();
+    if (/^https?:/.test(url)) shell.openExternal(url);
+  });
+  logWin.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  const unsubscribe = log.subscribe((entry) => {
+    if (logWin && !logWin.webContents.isDestroyed()) logWin.webContents.send('log', log.withLine(entry));
+  });
+  logWin.on('closed', () => { unsubscribe(); logWin = null; });
+  logWin.loadFile('logs.html');
+}
+
 function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
@@ -891,6 +1048,7 @@ function buildMenu() {
         { label: 'Connections…', accelerator: 'CmdOrCtrl+Shift+O', click: () => userShow(null) },
         { label: 'Reconnect', accelerator: 'CmdOrCtrl+Shift+R', click: reconnectActive },
         { label: 'Open Config File', click: () => shell.openPath(configFile()) },
+        { label: 'Connection Log…', accelerator: 'CmdOrCtrl+Shift+L', click: openLogWindow },
         { type: 'separator' },
         // Opens the page's settings panel; needs a host page on screen.
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => chromeCmd('settings') },
@@ -939,6 +1097,13 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
+  log.init(path.join(app.getPath('userData'), 'logs'));
+  log.info(null, 'client started', {
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    platform: `${process.platform}-${process.arch}`,
+    logFile: log.logFile(),
+  });
   loadStore();
   ensureAskpass();
   registerAppScheme();
@@ -950,8 +1115,12 @@ app.whenReady().then(() => {
   // so reconnection starts now instead of after the keepalive timeout; the
   // exit handlers decide what follows (auto-retry only if ever connected).
   powerMonitor.on('resume', () => {
-    for (const conn of conns.values()) {
-      if (conn.tunnel) { conn.retryDelay = 0; conn.tunnel.kill(); }
+    const live = [...conns.values()].filter((c) => c.tunnel);
+    log.info(null, 'system resumed from sleep', { tunnelsKilled: live.length });
+    for (const conn of live) {
+      log.info(conn.name, 'killing pre-sleep tunnel to reconnect now', { pid: conn.tunnel.pid });
+      conn.retryDelay = 0;
+      conn.tunnel.kill();
     }
   });
 
@@ -963,5 +1132,6 @@ app.on('window-all-closed', () => app.quit());
 
 app.on('before-quit', () => {
   quitting = true;
-  for (const conn of conns.values()) stopTunnel(conn);
+  log.info(null, 'client quitting', { connections: conns.size });
+  for (const conn of conns.values()) stopTunnel(conn, 'quit');
 });

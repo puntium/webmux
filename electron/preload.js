@@ -18,5 +18,11 @@ if (location.protocol === 'file:') {
     chromeCmd: (cmd) => ipcRenderer.invoke('conns:cmd', cmd), // header actions → active host page
     getSettings: () => ipcRenderer.invoke('settings:get'), // client-wide UI settings (theme)
     onSettings: (cb) => ipcRenderer.on('settings', (_ev, s) => cb(s)),
+    // Connection log (logs.html tails it; connect.html opens the window).
+    openLog: () => ipcRenderer.invoke('log:open'),
+    getLog: (afterSeq) => ipcRenderer.invoke('log:get', afterSeq), // { entries, file }
+    onLog: (cb) => ipcRenderer.on('log', (_ev, entry) => cb(entry)),
+    clearLog: () => ipcRenderer.invoke('log:clear'),
+    revealLog: () => ipcRenderer.invoke('log:reveal'), // show the file in Finder
   });
 }

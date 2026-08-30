@@ -19,6 +19,7 @@ fs.writeFileSync(path.join(scratch, 'config.json'), JSON.stringify({
 
 const handlers = {};
 const sent = [];
+const revealed = [];
 const loads = [];
 let appScheme = null; // the webmux:// protocol handler
 
@@ -47,17 +48,34 @@ class FakeBaseWindow {
   setBackgroundColor(c) { this.bg = c; }
   on() {}
 }
+// The log window: a plain BrowserWindow whose 'closed' handler we can fire.
+class FakeBrowserWindow {
+  constructor() {
+    this.webContents = new FakeWebContents();
+    this.webContents.isDestroyed = () => false;
+    this.handlers = {};
+    this.focused = 0;
+    FakeBrowserWindow.last = this;
+    FakeBrowserWindow.count = (FakeBrowserWindow.count || 0) + 1;
+  }
+  on(ev, fn) { this.handlers[ev] = fn; }
+  focus() { this.focused++; }
+  loadFile(f) { this.webContents.loadFile(f); }
+  close() { this.handlers.closed?.(); }
+}
 
 const stub = {
   app: {
     getPath: () => scratch,
+    getVersion: () => '0.0.0-test',
     whenReady: () => Promise.resolve(),
     on: () => {},
   },
   BaseWindow: FakeBaseWindow,
+  BrowserWindow: FakeBrowserWindow,
   WebContentsView: FakeWebContentsView,
   Menu: { setApplicationMenu: () => {}, buildFromTemplate: (t) => t },
-  shell: { openExternal: () => {}, openPath: () => {} },
+  shell: { openExternal: () => {}, openPath: () => {}, showItemInFolder: (p) => { revealed.push(p); } },
   powerMonitor: { on: () => {} },
   ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } },
   protocol: { registerSchemesAsPrivileged: () => {}, handle: (_scheme, fn) => { appScheme = fn; } },
@@ -204,6 +222,93 @@ const connState = async (name) =>
   st = await connState('bad');
   assert.strictEqual(st.state, 'failed', 'no auto-retry after a never-connected failure');
   console.log('failed-parks ok  (stderr: ' + st.stderr.split('\n')[0] + ')');
+
+  // -- connection log: main's own events ---------------------------------
+  let lg = await handlers['log:get'](null, 0);
+  assert.strictEqual(lg.file, path.join(scratch, 'logs', 'webmux.log'), 'log file lives under userData/logs');
+  const msgs = (name) => lg.entries.filter((e) => e.conn === name).map((e) => e.msg);
+  assert.ok(lg.entries[0].msg === 'client started' && lg.entries[0].conn === null, 'startup entry first');
+  assert.ok(msgs('bad').some((m) => m === 'connect requested'), 'connect logged');
+  assert.ok(msgs('bad').some((m) => /^state connecting → failed$/.test(m)), 'state transition logged');
+  assert.ok(msgs('bad').some((m) => m === 'deploy failed'), 'deploy failure logged');
+  const req = lg.entries.find((e) => e.conn === 'bad' && e.msg === 'connect requested');
+  assert.strictEqual(req.data.auth, 'password', 'auth mode logged, never the password');
+  assert.ok(!JSON.stringify(lg.entries).includes('"pw"'), 'password never appears in the log');
+  assert.ok(lg.entries.every((e) => typeof e.line === 'string' && e.line.includes(e.msg)), 'entries carry their file line');
+  const fileText = fs.readFileSync(lg.file, 'utf8');
+  assert.ok(fileText.includes('[bad] state connecting → failed'), 'file mirrors the ring');
+  assert.strictEqual(fileText.trim().split('\n').length, lg.entries.length, 'one file line per entry');
+
+  // -- connection log: the page reports over POST /log on its origin -------
+  // Use a live connection's own origin so the batch is tagged with its name.
+  const crypto = require('crypto');
+  const slugOf = (host, instance) => {
+    const hash = crypto.createHash('sha256').update(`${host}\n${instance || 'default'}`).digest('hex').slice(0, 8);
+    const base = host.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    return `${base}-${hash}`;
+  };
+  const badOrigin = `webmux://${slugOf('nobody@webmux-test.invalid', '')}`;
+  const before = lg.entries.length;
+  res = await appScheme(new Request(`${badOrigin}/log`, {
+    method: 'POST',
+    body: JSON.stringify([
+      { level: 'warn', msg: 'session socket dropped — retrying', data: { session: 's1', code: 1006, retryInMs: 1000, nested: { a: 1 } } },
+      { level: 'bogus', msg: 'x'.repeat(2000), data: { 'bad key!': 1, ok: 'y' } },
+      'not an object',
+    ]),
+  }));
+  assert.strictEqual(res.status, 200, 'page log accepted');
+  lg = await handlers['log:get'](null, 0);
+  assert.strictEqual(lg.entries.length, before + 2, 'two well-formed entries taken, junk skipped');
+  const pageEntry = lg.entries[before];
+  assert.strictEqual(pageEntry.conn, 'bad', 'tagged with the connection owning that origin');
+  assert.strictEqual(pageEntry.src, 'page');
+  assert.strictEqual(pageEntry.level, 'warn');
+  assert.strictEqual(pageEntry.data.nested, '{"a":1}', 'nested data flattened to JSON');
+  assert.ok(pageEntry.line.includes('[bad] page: session socket dropped'), 'file line marks page origin');
+  const clipped = lg.entries[before + 1];
+  assert.strictEqual(clipped.level, 'info', 'unknown level falls back to info');
+  assert.strictEqual(clipped.msg.length, 500, 'message clipped');
+  assert.deepStrictEqual(Object.keys(clipped.data), ['ok'], 'bad data keys dropped');
+  res = await appScheme(new Request('webmux://unknown-host/log', { method: 'POST', body: '[{"msg":"hi"}]' }));
+  assert.strictEqual((await handlers['log:get'](null, 0)).entries.at(-1).conn, 'unknown-host', 'unknown origin keeps its slug');
+  res = await appScheme(new Request(`${badOrigin}/log`, { method: 'GET' }));
+  assert.strictEqual(res.status, 405, 'log is write-only for pages');
+  res = await appScheme(new Request(`${badOrigin}/log`, { method: 'POST', body: '{nope' }));
+  assert.strictEqual(res.status, 400, 'malformed batch rejected');
+
+  // incremental fetch + log window lifecycle
+  const afterSeq = lg.entries.at(-1).seq;
+  res = await appScheme(new Request(`${badOrigin}/log/open`, { method: 'POST' }));
+  assert.strictEqual(res.status, 200, 'page can ask for the log window');
+  assert.strictEqual(FakeBrowserWindow.count, 1, 'log window created');
+  assert.ok(loads.some(([kind, f]) => kind === 'file' && f === 'logs.html'), 'log window loads logs.html');
+  await handlers['log:open']();
+  assert.strictEqual(FakeBrowserWindow.count, 1, 'second open focuses the existing window');
+  assert.strictEqual(FakeBrowserWindow.last.focused, 1);
+  sent.length = 0;
+  await settingsReq('PUT', { theme: 'light' });
+  assert.ok(sent.some((m) => m.ch === 'settings'), 'log window gets settings pushes too');
+  await handlers['conns:disconnect'](null, 'bad');
+  const pushed = sent.filter((m) => m.ch === 'log').map((m) => m.payload);
+  assert.ok(pushed.some((e) => e.conn === 'bad' && e.msg === 'disconnecting (user)' && e.line), 'live entries stream to the log window');
+  lg = await handlers['log:get'](null, afterSeq);
+  assert.ok(lg.entries.length > 0 && lg.entries.every((e) => e.seq > afterSeq), 'log:get is incremental');
+  await handlers['log:reveal']();
+  assert.deepStrictEqual(revealed, [lg.file], 'reveal shows the file');
+  await handlers['log:clear']();
+  lg = await handlers['log:get'](null, 0);
+  assert.strictEqual(lg.entries.length, 1, 'clear empties the ring…');
+  assert.ok(lg.entries[0].msg.startsWith('log cleared'), '…leaving a marker');
+  assert.ok(fs.readFileSync(lg.file, 'utf8').includes('connect requested'), 'clear leaves the file alone');
+  FakeBrowserWindow.last.close();
+  await handlers['log:open']();
+  assert.strictEqual(FakeBrowserWindow.count, 2, 'closing the window lets a new one open');
+  FakeBrowserWindow.last.close();
+  // reconnect the parked profile so the remaining tests see the same state as before
+  r = await handlers['profiles:connect'](null, 'bad');
+  await sleep(2500);
+  console.log('log ok');
 
   // -- no port bookkeeping in the store ----------------------------------
   // The page's origin is the webmux:// host slug now, so the auto-picked

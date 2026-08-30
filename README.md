@@ -163,6 +163,14 @@ On a deployed host these run under the pushed node:
   and every connected host page follows a change at once (the page reads and
   writes them at `/settings.json` on its own `webmux://` origin; served
   directly by the server instead, they fall back to localStorage).
+- **Open log…** in that panel (also ⌘⇧L, the *Log* button on the
+  connection page, or *Connection Log…* in the app menu) opens the client's
+  connection log: every tunnel setup, deploy step, probe miss, tunnel exit,
+  retry, and — reported by each host page over `POST /log` on its own
+  origin — every session-socket drop and reconnect. Live tail, filter by
+  host/level/text, *Copy visible* / *Copy all* for pasting into a bug
+  report; the same lines go to `<userData>/logs/webmux.log` (rotated at
+  1 MB). Passwords never appear — only which auth mode was used.
 - Click a URL in a terminal (plain text, via `@xterm/addon-web-links`, or an
   OSC 8 hyperlink such as Claude Code's `/login` link) for a chooser: open
   it in your default browser or copy it. Shift-click opens without asking.

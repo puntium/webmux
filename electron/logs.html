@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>webmux — connection log</title>
+<style>
+  /* Same palette as header.html / the served page: this window sits beside
+     them and should read as the same chrome. */
+  :root {
+    color-scheme: dark;
+    --bg: #1f1f2b;
+    --panel: #16161e;
+    --border: #34344a;
+    --text: #c8c8d8;
+    --muted: #8a8aa0;
+    --accent: #7aa2f7;
+    --accent-fg: #10101a;
+    --input-bg: #16161e;
+    --hover: rgba(255, 255, 255, 0.05);
+    --warn: #e0af68;
+    --error: #f7768e;
+    --debug: #6a6f87;
+    --page: #9ece6a;
+    --hl: rgba(224, 175, 104, 0.18);
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f4f5f9;
+    --panel: #ffffff;
+    --border: #c4c8d8;
+    --text: #343b58;
+    --muted: #6a6f87;
+    --accent: #2e7de9;
+    --accent-fg: #ffffff;
+    --input-bg: #ffffff;
+    --hover: rgba(0, 0, 0, 0.05);
+    --warn: #8c6c3e;
+    --error: #c8283f;
+    --debug: #9aa0b8;
+    --page: #4d8a2f;
+    --hl: rgba(140, 108, 62, 0.18);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 12.5px/1.4 system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+    flex-wrap: wrap;
+  }
+  #toolbar .spacer { flex: 1; }
+  #toolbar label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  select, input[type="search"] {
+    font: inherit;
+    color: var(--text);
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 7px;
+  }
+  select:focus, input:focus { outline: none; border-color: var(--accent); }
+  input[type="search"] { width: 200px; }
+  input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+  button {
+    font: inherit;
+    font-weight: 600;
+    color: var(--text);
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  button.primary:hover { filter: brightness(1.1); color: var(--accent-fg); }
+  #lines {
+    flex: 1;
+    overflow: auto;
+    background: var(--panel);
+    padding: 6px 0;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    user-select: text;
+    cursor: text;
+  }
+  .ln {
+    display: flex;
+    gap: 0 8px;
+    padding: 1px 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .ln:hover { background: var(--hover); }
+  .ln .t { color: var(--muted); flex: none; }
+  .ln .lvl { flex: none; width: 5ch; font-weight: 600; }
+  .ln .who { flex: none; color: var(--accent); }
+  .ln .who.page { color: var(--page); }
+  .ln .msg { min-width: 0; }
+  .ln .data { color: var(--muted); }
+  .ln.lv-debug { color: var(--debug); }
+  .ln.lv-debug .who, .ln.lv-debug .t { color: var(--debug); }
+  .ln.lv-warn .lvl, .ln.lv-warn .msg { color: var(--warn); }
+  .ln.lv-error .lvl, .ln.lv-error .msg { color: var(--error); }
+  .ln.lv-info .lvl { color: var(--muted); }
+  .ln.hit { background: var(--hl); }
+  #empty {
+    padding: 40px 12px;
+    color: var(--muted);
+    text-align: center;
+    font: 13px system-ui, sans-serif;
+    user-select: none;
+  }
+  #status {
+    display: flex;
+    gap: 12px;
+    padding: 5px 12px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11.5px;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  #status .file { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #status .flash { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <label>Host <select id="host"><option value="">all</option></select></label>
+  <label>Level
+    <select id="level">
+      <option value="debug">debug+</option>
+      <option value="info" selected>info+</option>
+      <option value="warn">warn+</option>
+      <option value="error">error</option>
+    </select>
+  </label>
+  <input id="search" type="search" placeholder="filter text…" spellcheck="false">
+  <label title="Keep the newest entry in view"><input id="follow" type="checkbox" checked> follow</label>
+  <span class="spacer"></span>
+  <button id="copyVisible" class="primary" title="Copy the lines currently shown (⌘⇧C)">Copy visible</button>
+  <button id="copyAll" title="Copy every entry in memory, ignoring the filters">Copy all</button>
+  <button id="reveal" title="Show the log file in Finder">Reveal file</button>
+  <button id="clear" title="Empty the in-memory log (the file is kept)">Clear</button>
+</div>
+<div id="lines"><div id="empty">No log entries yet.</div></div>
+<div id="status">
+  <span id="count"></span>
+  <span id="flash" class="flash"></span>
+  <span class="spacer" style="flex:1"></span>
+  <span id="file" class="file"></span>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  const applySettings = (s) => { document.documentElement.dataset.theme = s.theme; };
+  webmux.onSettings(applySettings);
+  webmux.getSettings().then(applySettings);
+
+  const LEVEL_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
+  let entries = []; // everything main has sent, in order (each carries .line = file format)
+  let lastSeq = 0;
+  const hosts = new Set();
+
+  const filters = () => ({
+    host: $('host').value,
+    level: LEVEL_RANK[$('level').value] ?? 1,
+    text: $('search').value.trim().toLowerCase(),
+  });
+  const passes = (e, f) =>
+    (f.host === '' || (e.conn || '·client·') === f.host)
+    && LEVEL_RANK[e.level] >= f.level
+    && (!f.text || e.line.toLowerCase().includes(f.text));
+
+  const timeOf = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  };
+  const dataOf = (e) => e.data && Object.keys(e.data).length
+    ? Object.entries(e.data).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' ')
+    : '';
+
+  function lineHtml(e, text) {
+    const who = e.conn ? `[${e.conn}]` : '';
+    return `<div class="ln lv-${esc(e.level)}${text ? ' hit' : ''}" title="${esc(e.t)}">`
+      + `<span class="t">${esc(timeOf(e.t))}</span>`
+      + `<span class="lvl">${esc(e.level.toUpperCase())}</span>`
+      + (who ? `<span class="who${e.src === 'page' ? ' page' : ''}">${esc(who)}${e.src === 'page' ? ' page' : ''}</span>` : '')
+      + `<span class="msg">${esc(e.msg)}</span>`
+      + (e.data ? `<span class="data">${esc(dataOf(e))}</span>` : '')
+      + '</div>';
+  }
+
+  let shown = 0;
+  function render() {
+    const f = filters();
+    const visible = entries.filter((e) => passes(e, f));
+    shown = visible.length;
+    $('lines').innerHTML = visible.length
+      ? visible.map((e) => lineHtml(e, f.text)).join('')
+      : `<div id="empty">${entries.length ? 'Nothing matches the current filters.' : 'No log entries yet.'}</div>`;
+    updateCount();
+    if ($('follow').checked) scrollToEnd();
+  }
+
+  function append(e) {
+    const f = filters();
+    if (!passes(e, f)) { updateCount(); return; }
+    const empty = $('empty');
+    if (empty) empty.remove();
+    $('lines').insertAdjacentHTML('beforeend', lineHtml(e, f.text));
+    shown++;
+    updateCount();
+    if ($('follow').checked) scrollToEnd();
+  }
+
+  function updateCount() {
+    $('count').textContent = shown === entries.length
+      ? `${entries.length} entries`
+      : `${shown} of ${entries.length} entries`;
+  }
+
+  function scrollToEnd() {
+    const el = $('lines');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // Tail semantics: scrolling away from the bottom pauses following,
+  // scrolling back down resumes it.
+  $('lines').addEventListener('scroll', () => {
+    const el = $('lines');
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 4;
+    if (atBottom !== $('follow').checked) $('follow').checked = atBottom;
+  });
+  $('follow').addEventListener('change', () => { if ($('follow').checked) scrollToEnd(); });
+
+  function noteHost(e) {
+    const key = e.conn || '·client·';
+    if (hosts.has(key)) return;
+    hosts.add(key);
+    const opt = document.createElement('option');
+    opt.value = key;
+    opt.textContent = e.conn || 'client (no host)';
+    $('host').appendChild(opt);
+  }
+
+  function take(e) {
+    if (e.seq <= lastSeq) return false; // duplicate from the initial load racing a push
+    lastSeq = e.seq;
+    entries.push(e);
+    noteHost(e);
+    return true;
+  }
+
+  let flashTimer;
+  function flash(text) {
+    $('flash').textContent = text;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { $('flash').textContent = ''; }, 2000);
+  }
+
+  async function copy(list, what) {
+    const text = list.map((e) => e.line).join('\n') + (list.length ? '\n' : '');
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    flash(`copied ${list.length} ${what} line${list.length === 1 ? '' : 's'}`);
+  }
+  const copyVisible = () => copy(entries.filter((e) => passes(e, filters())), 'visible');
+  $('copyVisible').addEventListener('click', copyVisible);
+  $('copyAll').addEventListener('click', () => copy(entries, ''));
+  $('reveal').addEventListener('click', () => webmux.revealLog());
+  $('clear').addEventListener('click', async () => {
+    await webmux.clearLog(); // main pushes a "cleared" entry back
+    entries = [];
+    render();
+  });
+
+  for (const id of ['host', 'level']) $(id).addEventListener('change', render);
+  let searchTimer;
+  $('search').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(render, 80);
+  });
+
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { window.close(); return; }
+    const mod = ev.metaKey || ev.ctrlKey;
+    if (mod && ev.shiftKey && ev.key.toLowerCase() === 'c') { ev.preventDefault(); copyVisible(); }
+    if (mod && ev.key === 'f') { ev.preventDefault(); $('search').focus(); $('search').select(); }
+  });
+
+  webmux.onLog((e) => { if (take(e)) append(e); });
+  (async () => {
+    const { entries: initial, file } = await webmux.getLog(0);
+    for (const e of initial) take(e);
+    $('file').textContent = file || '';
+    $('file').title = file || '';
+    render();
+  })();
+</script>
+</body>
+</html>

@@ -21,6 +21,7 @@ import { API, WS_BASE } from './env.js';
 import {
   THEMES, getSettings, themeOf, loadSettings, updateSettings, onSettingsChange,
 } from './settings.js';
+import { logDebug, logInfo, logWarn, logError, openLogWindow } from './log.js';
 
 const layoutEl = document.getElementById('layout');
 const tiles = new Map(); // sessionId -> tile
@@ -150,6 +151,8 @@ function updateTitle() {
 function setLinkDown(down) {
   if (linkDown === down) return;
   linkDown = down;
+  if (down) logWarn('link down — a session socket dropped and is retrying');
+  else logInfo('link up — a session socket is open again');
   updateTitle();
 }
 
@@ -524,6 +527,11 @@ function showSettingsModal() {
         </span>
         <span class="setting-desc">How much panes other than the focused one dim. 0% leaves them untouched.</span>
       </label>
+      <div class="setting">
+        <span class="setting-label">Connection log</span>
+        <span class="setting-control"><button type="button" class="log-open">Open log…</button></span>
+        <span class="setting-desc">Tunnel setup, teardown, and reconnect events for every host on this client, live and copyable. Also written to a file on disk.</span>
+      </div>
       <div class="actions">
         <button class="settings-close primary">Done</button>
       </div>
@@ -570,6 +578,9 @@ function showSettingsModal() {
   });
   range.addEventListener('change', () => updateSettings({ unfocusedFade: range.value }));
   overlay.querySelector('.settings-close').addEventListener('click', close);
+  overlay.querySelector('.log-open').addEventListener('click', async () => {
+    if (!(await openLogWindow())) setStatus('the log window is part of the Electron client — see the browser console here');
+  });
 
   settingsOverlay = overlay;
   document.body.appendChild(overlay);
@@ -599,6 +610,7 @@ function makeTile(sessionId) {
     term: null,
     fit: null,
     ws: null,
+    attempts: 0, // socket connects this page has made for the session
     exited: false,
     dead: false, // tile removed — suppresses the reconnect loop
     online: false,
@@ -747,18 +759,25 @@ function makeTile(sessionId) {
     // tile is closed.
     connect() {
       const term = this.term;
+      const attempt = ++this.attempts;
+      const startedAt = Date.now();
       const ws = new WebSocket(`${WS_BASE}/ws?session=${sessionId}`);
       this.ws = ws;
+      logDebug(attempt === 1 ? 'session socket connecting' : 'session socket reconnecting', { session: sessionId, attempt });
 
       ws.onopen = () => {
         this.online = true;
         this.retryDelay = 0;
+        logInfo(attempt === 1 ? 'session socket open' : 'session socket reopened', {
+          session: sessionId, attempt, ms: Date.now() - startedAt,
+        });
         setLinkDown(false);
         this.fitAndReport();
       };
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data);
         if (msg.type === 'snapshot') {
+          logDebug('snapshot received', { session: sessionId, bytes: msg.data ? msg.data.length : 0 });
           term.reset();
           if (msg.data) term.write(msg.data);
           this.setTitle(msg.title);
@@ -775,6 +794,7 @@ function makeTile(sessionId) {
           tiles.get(msg.session)?.setTitle(msg.title);
         } else if (msg.type === 'exit') {
           this.exited = true;
+          logInfo('session exited', { session: sessionId, exitCode: msg.exitCode });
           term.write(`\r\n\x1b[31m[session exited: ${msg.exitCode}]\x1b[0m\r\n`);
           setTimeout(() => removeTile(sessionId, false), 1200);
         } else if (msg.type === 'paste-result') {
@@ -789,17 +809,30 @@ function makeTile(sessionId) {
             showLinkModal(msg.url, this);
           }
         } else if (msg.type === 'error') {
+          logWarn('session gone on the host — closing its tab', { session: sessionId, error: msg.error || msg.message });
           removeTile(sessionId, false); // session no longer exists on the host
         }
       };
-      ws.onclose = () => {
-        if (this.dead || this.exited) return;
+      ws.onclose = (ev) => {
+        if (this.dead || this.exited) {
+          logDebug('session socket closed (tab closed or session exited)', { session: sessionId, code: ev.code });
+          return;
+        }
         setLinkDown(true); // cleared by whichever socket next opens
+        const wasOnline = this.online;
         if (this.online) {
           this.online = false;
           term.write('\r\n\x1b[33m[disconnected — reconnecting…]\x1b[0m\r\n');
         }
         this.retryDelay = Math.min((this.retryDelay || 500) * 2, 10000);
+        logWarn(wasOnline ? 'session socket dropped — retrying' : 'session socket connect failed — retrying', {
+          session: sessionId,
+          code: ev.code,
+          reason: ev.reason || undefined,
+          clean: ev.wasClean,
+          upMs: Date.now() - startedAt,
+          retryInMs: this.retryDelay,
+        });
         setTimeout(() => {
           // this.ws !== ws means something else already reconnected
           if (!this.dead && !this.exited && this.ws === ws) this.connect();
@@ -959,7 +992,14 @@ function newFilesSession() {
 // ---------------------------------------------------------------------------
 
 async function attachExisting() {
-  const sessions = await (await fetch(`${API}/api/sessions`)).json();
+  let sessions;
+  try {
+    sessions = await (await fetch(`${API}/api/sessions`)).json();
+  } catch (err) {
+    logError('session list fetch failed', { api: API || location.origin, error: String(err.message || err) });
+    throw err;
+  }
+  logInfo('page attached', { sessions: sessions.length, api: API || location.origin });
   const live = sessions.map((s) => s.id);
   const liveSet = new Set(live);
 

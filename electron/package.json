@@ -1,6 +1,6 @@
 {
   "name": "webmux-client",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "description": "macOS Electron client for webmux, connected over a supervised SSH tunnel",
   "main": "main.js",
@@ -27,10 +27,12 @@
     "files": [
       "main.js",
       "preload.js",
+      "log.js",
       "deploy.js",
       "platforms.js",
       "connect.html",
       "header.html",
+      "logs.html",
       "ui/**/*",
       "payload/payload.tar.gz",
       "payload/payload.json"

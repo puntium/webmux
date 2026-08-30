@@ -140,6 +140,7 @@
   <div class="topbar">
     <h1>webmux</h1>
     <span class="spacer"></span>
+    <button id="logBtn" title="Connection log (⌘⇧L)">Log</button>
     <button class="primary" id="newBtn">New Profile</button>
   </div>
 
@@ -324,7 +325,7 @@
         html += `<p>Connection interrupted — retrying in ${esc(c.delay ?? '?')}s… (sessions keep running on the server)</p>`;
       }
       if (c.state === 'failed') {
-        html += `<p>Not retrying automatically — hit Connect to try again.</p>`;
+        html += `<p>Not retrying automatically — hit Connect to try again. The connection log (Log button above) has the full sequence.</p>`;
       }
       if (c.stderr) html += `<pre>${esc(c.stderr)}</pre>`;
     }
@@ -340,6 +341,7 @@
   }
 
   $('newBtn').addEventListener('click', () => { editing = ''; confirmDelete = null; render(); });
+  $('logBtn').addEventListener('click', () => webmux.openLog());
 
   $('list').addEventListener('click', async (ev) => {
     const b = ev.target.closest('button');
