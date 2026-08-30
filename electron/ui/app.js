@@ -453,8 +453,9 @@ const openInBrowser = (uri) => window.open(uri, '_blank', 'noopener');
 
 // Clicking a detected URL in a terminal pops this chooser instead of xterm's
 // default open-immediately behavior (shift-click skips it — see the
-// web-links handler in Tile). Returns focus to the terminal on close.
-function showLinkModal(uri, tile) {
+// web-links handler in Tile). Returns focus to the tile on close. Also
+// used by the file browser for links in rendered markdown.
+export function showLinkModal(uri, tile) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `

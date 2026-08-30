@@ -4,7 +4,9 @@
    (never a server session id) and its state ({ dir, cursor }) persists in
    localStorage next to the layout. Columns show the ancestor chain of `dir`;
    the cursor entry gets one extra column — a listing for directories, a
-   preview (text/image/stat) for files. Arrows / hjkl navigate like yazi;
+   preview (text/image/stat) for files — markdown renders by default, with a
+   Rendered / Source toggle in the preview header. Arrows / hjkl navigate
+   like yazi;
    r/F2 renames the selected entry inline and d/Delete deletes it (after a
    confirm; directories delete recursively) — both also have buttons on the
    selected row. Files or folders dragged onto a column upload into that
@@ -20,7 +22,7 @@
 
 // Circular with app.js's import of this module, which is fine: both modules
 // only call across the cycle at runtime, never during evaluation.
-import { setStatus } from './app.js';
+import { setStatus, showLinkModal } from './app.js';
 import { API } from './env.js';
 
 export const isFilesId = (id) => typeof id === 'string' && id.startsWith('files-');
@@ -68,6 +70,57 @@ const fsChain = (dir) => { // '/a/b' -> ['/', '/a', '/a/b']
   for (const seg of dir.split('/').filter(Boolean)) chain.push(cur += '/' + seg);
   return chain;
 };
+
+const isMarkdownName = (name) => /\.(md|markdown|mdown|mkd)$/i.test(name);
+
+// Resolve a relative link from a markdown file against that file's
+// directory; returns null for anything with a scheme (http:, mailto:, …).
+function resolveRelative(baseDir, href) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
+  const segs = (href.startsWith('/') ? [] : baseDir.split('/').filter(Boolean));
+  for (const seg of href.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') segs.pop();
+    else segs.push(seg);
+  }
+  return '/' + segs.join('/');
+}
+
+// Markdown → DOM via marked (vendored by the client at /vendor/marked). The
+// preview is a viewer, not a web page: raw HTML in the source is shown as
+// literal text, the output is parsed in an inert document and scrubbed
+// (no scripts, no on* handlers) before it touches the page, and relative
+// image paths are served through /api/fs/raw so a README's screenshots
+// show. Returns null when the renderer isn't available.
+let mdParser = null;
+function renderMarkdown(src, fileDir) {
+  if (typeof marked === 'undefined') return null;
+  mdParser ||= new marked.Marked({
+    gfm: true,
+    renderer: {
+      html({ text, block }) {
+        const esc = text.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+        return block ? `<p>${esc}</p>\n` : esc;
+      },
+    },
+  });
+  let html;
+  try { html = mdParser.parse(src); }
+  catch { return null; }
+  const doc = new DOMParser().parseFromString(`<div class="files-md">${html}</div>`, 'text/html');
+  for (const el of doc.querySelectorAll('script, style, iframe, object, embed, link, meta')) el.remove();
+  for (const el of doc.body.querySelectorAll('*')) {
+    for (const a of [...el.attributes]) {
+      if (/^on/i.test(a.name)) el.removeAttribute(a.name);
+    }
+  }
+  for (const img of doc.querySelectorAll('img[src]')) {
+    const local = resolveRelative(fileDir, img.getAttribute('src'));
+    if (local) img.src = `${API}/api/fs/raw?path=${encodeURIComponent(local)}`;
+  }
+  for (const input of doc.querySelectorAll('input')) input.disabled = true; // task-list boxes
+  return document.adoptNode(doc.body.firstElementChild);
+}
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -380,32 +433,91 @@ export function makeFilesTile(id) {
     return col;
   }
 
+  // Rendered-vs-source choice for markdown previews. Remembered while the
+  // tile lives (not persisted): flipping to Source and stepping to the next
+  // .md keeps showing source; a fresh tile starts rendered.
+  let mdShowSource = false;
+
   function previewContent(filePath, info) {
     const wrap = document.createElement('div');
     wrap.className = 'files-preview-inner';
 
     const head = document.createElement('div');
     head.className = 'files-preview-head';
+    const ftext = document.createElement('div');
+    ftext.className = 'ftext';
     const fname = document.createElement('div');
     fname.className = 'fname';
     fname.textContent = fsBase(filePath);
     const fmeta = document.createElement('div');
     fmeta.className = 'fmeta';
     fmeta.textContent = `${formatSize(info.size)} · ${new Date(info.mtime).toLocaleString()}`;
-    head.append(fname, fmeta);
+    ftext.append(fname, fmeta);
+    head.appendChild(ftext);
 
     const body = document.createElement('div');
     body.className = 'files-preview-body';
+    const sourceView = () => {
+      const pre = document.createElement('pre');
+      pre.textContent = info.content || '(empty file)';
+      body.replaceChildren(pre);
+      if (info.truncated) body.appendChild(msg('(preview truncated)'));
+    };
     if (info.kind === 'image') {
       const img = document.createElement('img');
       img.src = `${API}/api/fs/raw?path=${encodeURIComponent(filePath)}`;
       img.alt = fsBase(filePath);
       body.appendChild(img);
+    } else if (info.kind === 'text' && isMarkdownName(filePath)) {
+      const fileDir = fsParent(filePath);
+      const renderedView = () => {
+        const md = info.content ? renderMarkdown(info.content, fileDir) : null;
+        if (!md) return sourceView(); // renderer unavailable / empty file
+        body.replaceChildren(md);
+        if (info.truncated) body.appendChild(msg('(preview truncated)'));
+      };
+      const toggle = document.createElement('div');
+      toggle.className = 'files-view-toggle';
+      toggle.setAttribute('role', 'group');
+      toggle.setAttribute('aria-label', 'Markdown view');
+      const mkBtn = (txt, source) => {
+        const b = document.createElement('button');
+        b.textContent = txt;
+        b.addEventListener('click', () => {
+          if (mdShowSource === source) return;
+          mdShowSource = source;
+          apply();
+          colsEl.focus();
+        });
+        return b;
+      };
+      const btns = [mkBtn('Rendered', false), mkBtn('Source', true)];
+      toggle.append(...btns);
+      head.appendChild(toggle);
+      const apply = () => {
+        btns[0].setAttribute('aria-pressed', String(!mdShowSource));
+        btns[1].setAttribute('aria-pressed', String(mdShowSource));
+        if (mdShowSource) sourceView();
+        else renderedView();
+      };
+      apply();
+      // Links: web URLs go through the app's link chooser like terminal
+      // links; relative ones navigate the browser to that entry.
+      body.addEventListener('click', (ev) => {
+        const a = ev.target.closest('a[href]');
+        if (!a || !body.contains(a)) return;
+        ev.preventDefault();
+        const href = a.getAttribute('href');
+        if (!href || href.startsWith('#')) return;
+        if (/^(https?|mailto):/i.test(href)) return showLinkModal(href, tile);
+        const local = resolveRelative(fileDir, href.split(/[#?]/)[0]);
+        if (!local) return setStatus(`can't open ${href}`);
+        state.dir = fsParent(local);
+        state.cursor = fsBase(local);
+        rerender();
+      });
     } else if (info.kind === 'text') {
-      const pre = document.createElement('pre');
-      pre.textContent = info.content || '(empty file)';
-      body.appendChild(pre);
-      if (info.truncated) body.appendChild(msg('(preview truncated)'));
+      sourceView();
     } else if (info.kind === 'binary') {
       body.appendChild(msg('binary file'));
     } else {

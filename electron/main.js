@@ -775,10 +775,12 @@ const VENDOR_DIRS = {
   xterm: path.join(__dirname, 'node_modules', '@xterm', 'xterm'),
   'addon-fit': path.join(__dirname, 'node_modules', '@xterm', 'addon-fit'),
   'addon-web-links': path.join(__dirname, 'node_modules', '@xterm', 'addon-web-links'),
+  marked: path.join(__dirname, 'node_modules', 'marked'), // file-browser markdown preview
 };
 
 // URL path -> file inside the bundle, or null (404). Vendor paths map into
-// the client's own @xterm packages; everything else comes from ui/.
+// the client's own npm packages (@xterm, marked); everything else comes
+// from ui/.
 function uiFile(pathname) {
   let root = UI_DIR;
   let rel = decodeURIComponent(pathname);
