@@ -375,6 +375,16 @@ const connState = async (name) =>
   assert.ok(r.ok);
   assert.strictEqual(readStore().lastProfile, 'bad2-renamed', 'lastProfile follows rename');
 
+  // -- restart sessions (remote pty-host shutdown over one-off ssh) ------
+  r = await handlers['profiles:restart-sessions'](null, 'nope');
+  assert.deepStrictEqual(r, { error: 'no such profile' });
+  // Unresolvable host: the ssh spawn itself works, the connection fails, and
+  // the failure surfaces as an error result instead of hanging or throwing.
+  // (Shell-hostile instance names are already rejected at save time above.)
+  r = await handlers['profiles:restart-sessions'](null, 'bad-renamed');
+  assert.ok(r.error && /ssh exited/.test(r.error), `restart against a dead host errors (got ${JSON.stringify(r)})`);
+  console.log('restart-sessions ok  (stderr above is the expected resolve failure)');
+
   // -- delete of a connected profile disconnects it ----------------------
   r = await handlers['profiles:delete'](null, 'bad-renamed');
   assert.ok(r.ok);

@@ -180,6 +180,18 @@ function sshBaseArgs(p) {
   ];
 }
 
+// Env for any ssh spawned for a profile: with a saved password, the askpass
+// helper answers the prompt. Throws if the keychain refuses to decrypt.
+function sshEnvFor(profile) {
+  if (!profile.passwordEnc) return process.env;
+  return {
+    ...process.env,
+    SSH_ASKPASS: askpassFile(),
+    SSH_ASKPASS_REQUIRE: 'force',
+    WEBMUX_SSH_PASSWORD: safeStorage.decryptString(Buffer.from(profile.passwordEnc, 'base64')),
+  };
+}
+
 function sshTunnelArgs(p, localPort, remoteSock) {
   return [
     '-N',
@@ -467,25 +479,18 @@ function startTunnel(conn) {
   const gen = ++conn.generation;
   conn.stderrTail = [];
 
-  let env = process.env;
-  if (conn.profile.passwordEnc) {
-    try {
-      env = {
-        ...process.env,
-        SSH_ASKPASS: askpassFile(),
-        SSH_ASKPASS_REQUIRE: 'force',
-        WEBMUX_SSH_PASSWORD: safeStorage.decryptString(Buffer.from(conn.profile.passwordEnc, 'base64')),
-      };
-    } catch (err) {
-      // Keychain refused (or ciphertext from another machine). Retrying
-      // won't help — park in the failed state with no timer and let the
-      // user re-enter the password in the profile.
-      conn.stderrTail = [String(err.message || err)];
-      log.error(conn.name, 'saved password could not be decrypted', { error: String(err.message || err) });
-      setConnStatus(conn, { state: 'failed', msg: 'saved password could not be decrypted — edit the profile and re-enter it' });
-      surfaceFailure(conn);
-      return;
-    }
+  let env;
+  try {
+    env = sshEnvFor(conn.profile);
+  } catch (err) {
+    // Keychain refused (or ciphertext from another machine). Retrying
+    // won't help — park in the failed state with no timer and let the
+    // user re-enter the password in the profile.
+    conn.stderrTail = [String(err.message || err)];
+    log.error(conn.name, 'saved password could not be decrypted', { error: String(err.message || err) });
+    setConnStatus(conn, { state: 'failed', msg: 'saved password could not be decrypted — edit the profile and re-enter it' });
+    surfaceFailure(conn);
+    return;
   }
 
   setConnStatus(conn, { state: 'connecting', msg: `ssh ${conn.profile.host}` });
@@ -699,6 +704,73 @@ function onServerUp(conn) {
   if (conn.reveal) { conn.reveal = false; show(conn.name); }
 }
 
+// "Restart Sessions" (connect page's per-profile menu): shut down the
+// profile's remote pty host over a one-off ssh — every shell in it dies, by
+// design (the page confirms first). Nothing needs starting afterwards: a
+// connected server's host-event watcher respawns a fresh host within ~1s,
+// and a disconnected profile gets one on its next connect. The shutdown CLI
+// only pokes the host's control socket, so whatever payload is already on
+// the host works — no deploy step needed, and it works while disconnected.
+// Same output contract as the deploy scripts: @@-tagged lines survive
+// shell-profile noise; POSIX sh, double quotes only (see deploy.js).
+//
+// Which ptyhost.js runs the shutdown matters: payload dirs accumulate on the
+// host and tar-preserved mtimes make "newest by ls -t" unreliable, and a CLI
+// from the wrong era may look for the host's control socket under a path the
+// running host doesn't use — concluding "not running" while the host hums
+// on. So prefer the payload this client ships (it's the one that spawned the
+// current host on any host this client has connected to), and if the CLI
+// still says not-running, fall back to killing this user's pty-host
+// process(es) for the instance directly — that's exactly what the user asked
+// for, and SIGTERM runs the host's clean shutdown path.
+function restartRemoteSessions(profile, env) {
+  const instance = String(profile.instance || '') || 'default';
+  let hash = '';
+  try {
+    hash = String(JSON.parse(fs.readFileSync(path.join(__dirname, 'payload', 'payload.json'), 'utf8')).hash || '');
+  } catch { /* dev build without a bundled payload */ }
+  if (!/^[a-f0-9]*$/.test(hash)) hash = '';
+  const instRe = instance.replace(/\./g, '[.]'); // regex-safe for pgrep -f
+  const script =
+    'node=$(ls -t $HOME/.webmux/dist/node/*/bin/node 2>/dev/null | head -1); ' +
+    (hash ? `ph=$HOME/.webmux/dist/payload/${hash}/ptyhost.js; [ -f "$ph" ] || ` : '') +
+    'ph=$(ls -t $HOME/.webmux/dist/payload/*/ptyhost.js 2>/dev/null | head -1); ' +
+    'if [ -z "$node" ] || [ -z "$ph" ]; then r=no-deploy; ' +
+    `elif "$node" "$ph" --name ${instance} shutdown; then r=restarted; ` +
+    'else r=not-running; fi; ' +
+    'if [ "$r" = not-running ]; then ' +
+    `pids=$(pgrep -u "$(id -un)" -f "ptyhost[.]js --name ${instRe}$" 2>/dev/null); ` +
+    (instance === 'default'
+      ? '[ -z "$pids" ] && pids=$(pgrep -u "$(id -un)" -f "ptyhost[.]js$" 2>/dev/null); '
+      : '') +
+    'if [ -n "$pids" ]; then kill $pids && r=stale-killed; fi; fi; ' +
+    'echo "@@result $r"';
+  return new Promise((resolve) => {
+    const child = spawn(
+      'ssh',
+      [...sshBaseArgs(profile), profile.host, `exec sh -c '${script}'`],
+      { stdio: ['ignore', 'pipe', 'pipe'], env },
+    );
+    let out = '';
+    const errLines = [];
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (chunk) => {
+      for (const line of String(chunk).split('\n')) if (line) errLines.push(line);
+    });
+    const timer = setTimeout(() => child.kill(), 30000);
+    child.on('error', (err) => { clearTimeout(timer); resolve({ error: String(err.message || err) }); });
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      const result = /^@@result (\S+)/m.exec(out)?.[1];
+      if (result === 'restarted') resolve({ ok: true, msg: 'sessions restarted — all shells were stopped, fresh ones start on demand' });
+      else if (result === 'stale-killed') resolve({ ok: true, msg: 'an old session host did not answer the shutdown and was killed — fresh sessions start on demand' });
+      else if (result === 'not-running') resolve({ ok: true, msg: 'no sessions were running — nothing to restart' });
+      else if (result === 'no-deploy') resolve({ error: 'webmux has never been deployed to this host' });
+      else resolve({ error: `ssh exited (${code ?? signal})${errLines.length ? ` — ${errLines.slice(-2).join('; ')}` : ''}` });
+    });
+  });
+}
+
 function reconnectActive() {
   const conn = activeName && conns.get(activeName);
   if (!conn) { show(null); return; }
@@ -794,6 +866,33 @@ function registerIpc() {
     conn.reveal = true;
     await connectConn(conn);
     return { ok: true };
+  });
+
+  ipcMain.handle('profiles:restart-sessions', async (_ev, name) => {
+    const profile = findProfile(name);
+    if (!profile) return { error: 'no such profile' };
+    // The instance name lands in a remote shell command; saved profiles are
+    // validated, but re-check in case config.json was edited by hand.
+    if (profile.instance && !/^[A-Za-z0-9._-]+$/.test(profile.instance)) {
+      return { error: 'invalid instance name in profile' };
+    }
+    let env;
+    try {
+      env = sshEnvFor(profile);
+    } catch {
+      return { error: 'saved password could not be decrypted — edit the profile and re-enter it' };
+    }
+    log.info(name, 'restart sessions requested', { instance: String(profile.instance || '') || 'default' });
+    const r = await restartRemoteSessions(profile, env);
+    log[r.error ? 'error' : 'info'](name, `restart sessions: ${r.error || r.msg}`);
+    // A live page is now full of tabs whose sessions no longer exist —
+    // reload it so it starts clean against the fresh host.
+    const conn = conns.get(name);
+    if (r.ok && conn && pageLive(conn)) {
+      log.info(name, 'reloading app page after session restart');
+      conn.view.webContents.loadURL(appUrl(conn));
+    }
+    return r;
   });
 
   ipcMain.handle('conns:get', () => snapshot());

@@ -102,6 +102,20 @@
   }
   .empty { color: var(--text-faint); text-align: center; padding: 28px 0 20px; }
 
+  /* Per-profile ⋯ menu. Rendered from state (menuFor), so the frequent
+     status re-renders rebuild it in place instead of closing it. */
+  .menu-wrap { position: relative; flex: none; }
+  .menu {
+    position: absolute; right: 0; top: calc(100% + 4px); z-index: 10;
+    background: var(--card); border: 1px solid var(--card-border); border-radius: 6px;
+    padding: 4px; min-width: 190px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+  .menu button {
+    display: block; width: 100%; text-align: left; white-space: nowrap;
+    background: none; border: none; border-radius: 4px; padding: 6px 10px;
+  }
+  .menu button:hover { background: var(--btn-hover); }
+
   form {
     background: var(--card); border: 1px solid var(--card-border); border-radius: 8px;
     padding: 16px; margin-bottom: 10px;
@@ -174,7 +188,20 @@
   let profiles = [];
   let snap = { active: null, connections: [] }; // pushed from main
   let editing = null; // original name of profile being edited, '' for new
+  let menuFor = null; // profile name whose ⋯ menu is open
   let confirmDelete = null;
+  let confirmRestart = null;
+  let notice = ''; // transient action result, shown above the status detail
+  let noticeTimer = null;
+
+  function closeMenu() { menuFor = null; confirmDelete = null; confirmRestart = null; }
+
+  function showNotice(text) {
+    notice = text;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => { notice = ''; renderStatus(); }, 8000);
+    renderStatus();
+  }
 
   const connOf = (name) => snap.connections.find((c) => c.name === name);
 
@@ -198,7 +225,6 @@
 
   function cardButtons(p, conn) {
     const b = [];
-    b.push(`<button class="small danger" data-del="${esc(p.name)}">${confirmDelete === p.name ? 'Sure?' : 'Delete'}</button>`);
     b.push(`<button class="small" data-edit="${esc(p.name)}">Edit</button>`);
     if (isUp(conn)) {
       b.push(`<button class="small" data-disconnect="${esc(p.name)}">Disconnect</button>`);
@@ -208,7 +234,23 @@
     } else {
       b.push(`<button class="small primary" data-connect="${esc(p.name)}">Connect</button>`);
     }
+    b.push(cardMenu(p));
     return b.join('');
+  }
+
+  // ⋯ menu: the rarely used / destructive per-profile actions. Both items
+  // confirm in place ("Sure?…"), same pattern the Delete button used.
+  function cardMenu(p) {
+    const n = esc(p.name);
+    return `<div class="menu-wrap">
+      <button class="small" data-menu="${n}" title="More actions">⋯</button>
+      ${menuFor === p.name ? `<div class="menu">
+        <button data-restart="${n}">${confirmRestart === p.name
+          ? 'Sure? This kills every shell' : 'Restart Sessions…'}</button>
+        <button class="danger" data-del="${n}">${confirmDelete === p.name
+          ? 'Sure? Removes the profile' : 'Delete Profile…'}</button>
+      </div>` : ''}
+    </div>`;
   }
 
   function renderList() {
@@ -314,6 +356,7 @@
   // are just a green dot on their card and a pill in the header.
   function renderStatus() {
     let html = '';
+    if (notice) html += `<p>${esc(notice)}</p>`;
     for (const c of snap.connections) {
       if (!['connecting', 'degraded', 'retry', 'failed'].includes(c.state)) continue;
       html += `<h2><span class="dot ${esc(c.state)}" style="display:inline-block;margin-right:6px"></span>${esc(c.name)}</h2>`;
@@ -340,7 +383,7 @@
     render();
   }
 
-  $('newBtn').addEventListener('click', () => { editing = ''; confirmDelete = null; render(); });
+  $('newBtn').addEventListener('click', () => { editing = ''; closeMenu(); render(); });
   $('logBtn').addEventListener('click', () => webmux.openLog());
 
   $('list').addEventListener('click', async (ev) => {
@@ -348,21 +391,40 @@
     if (!b) return;
     if (b.dataset.connect) { webmux.connect(b.dataset.connect); }
     else if (b.dataset.disconnect) { webmux.disconnect(b.dataset.disconnect); }
-    else if (b.dataset.edit) { editing = b.dataset.edit; confirmDelete = null; render(); }
-    else if (b.dataset.del) {
-      if (confirmDelete === b.dataset.del) {
-        confirmDelete = null;
-        await webmux.deleteProfile(b.dataset.del);
-        await refresh();
-        return;
-      }
-      confirmDelete = b.dataset.del;
+    else if (b.dataset.edit) { editing = b.dataset.edit; closeMenu(); render(); }
+    else if (b.dataset.menu) {
+      const open = menuFor !== b.dataset.menu;
+      closeMenu();
+      if (open) menuFor = b.dataset.menu;
       render();
+    }
+    else if (b.dataset.restart) {
+      const name = b.dataset.restart;
+      if (confirmRestart !== name) { confirmRestart = name; confirmDelete = null; render(); return; }
+      closeMenu();
+      render();
+      showNotice(`${name}: restarting sessions…`);
+      const r = await webmux.restartSessions(name);
+      showNotice(`${name}: ${r.error || r.msg || 'sessions restarted'}`);
+    }
+    else if (b.dataset.del) {
+      const name = b.dataset.del;
+      if (confirmDelete !== name) { confirmDelete = name; confirmRestart = null; render(); return; }
+      closeMenu();
+      await webmux.deleteProfile(name);
+      await refresh();
     }
   });
 
+  // Click anywhere outside an open ⋯ menu closes it.
+  document.addEventListener('click', (ev) => {
+    if (menuFor !== null && !ev.target.closest('.menu-wrap')) { closeMenu(); render(); }
+  });
+
   document.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && editing !== null) { editing = null; render(); }
+    if (ev.key !== 'Escape') return;
+    if (menuFor !== null) { closeMenu(); render(); }
+    else if (editing !== null) { editing = null; render(); }
   });
 
   // Status pushes must never rebuild the form — a mid-edit re-render wipes

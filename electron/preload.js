@@ -9,6 +9,9 @@ if (location.protocol === 'file:') {
     listProfiles: () => ipcRenderer.invoke('profiles:list'),
     saveProfile: (profile, originalName) => ipcRenderer.invoke('profiles:save', profile, originalName),
     deleteProfile: (name) => ipcRenderer.invoke('profiles:delete', name),
+    // "Restart Sessions": shuts down the profile's remote pty host (killing
+    // every shell); a fresh host starts on demand.
+    restartSessions: (name) => ipcRenderer.invoke('profiles:restart-sessions', name),
     connect: (name) => ipcRenderer.invoke('profiles:connect', name),
     getConns: () => ipcRenderer.invoke('conns:get'),
     onConns: (cb) => ipcRenderer.on('conns', (_ev, s) => cb(s)),
