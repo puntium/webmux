@@ -44,7 +44,10 @@ const { DEFAULT_NAME, socketPath, control } = require('./ptyhost-client');
 const SHELL = process.env.SHELL_CMD || process.env.SHELL || 'bash';
 const SCROLLBACK = 5000;
 const SHIM_DIR = path.join(__dirname, 'shims');
-const PASTE_DIR = path.join(os.tmpdir(), 'webmux-pastes');
+// Per-user: /tmp is shared, and a plain 'webmux-pastes' would be owned by
+// whichever user's webmux touched it first — every other user's clipboard
+// writes then fail with EACCES (and their pastes would be world-readable).
+const PASTE_DIR = path.join(os.tmpdir(), `webmux-pastes-${os.userInfo().username}`);
 
 let name = DEFAULT_NAME;
 const positional = [];
@@ -209,7 +212,11 @@ function shutdown(code = 0) {
 function handleCommand(sock, msg, onAttach) {
   switch (msg.cmd) {
     case 'ping':
-      send(sock, { ok: true, name, pid: process.pid, sessions: sessions.size });
+      // pasteDir tells the web server where this host's sessions expect the
+      // clipboard slot and open-url spool (WEBMUX_CLIPBOARD_DIR), so a newly
+      // deployed server stays consistent with sessions created before a
+      // paste-dir change.
+      send(sock, { ok: true, name, pid: process.pid, sessions: sessions.size, pasteDir: PASTE_DIR });
       sock.end();
       break;
     case 'list':
@@ -259,7 +266,7 @@ function handleCommand(sock, msg, onAttach) {
 function daemon() {
   const { readLines } = require('./ptyhost-client');
   const sockPath = socketPath(name);
-  fs.mkdirSync(PASTE_DIR, { recursive: true });
+  fs.mkdirSync(PASTE_DIR, { recursive: true, mode: 0o700 });
 
   const server = net.createServer((sock) => {
     sock.on('error', () => {}); // peer vanished mid-write — detach handles it

@@ -6,7 +6,7 @@
 # from $WEBMUX_CLIPBOARD_DIR/clipboard, written by the webmux server whenever
 # an image is pasted in the browser.
 
-CLIP="${WEBMUX_CLIPBOARD_DIR:-/tmp/webmux-pastes}/clipboard"
+CLIP="${WEBMUX_CLIPBOARD_DIR:-/tmp/webmux-pastes-$(id -un)}/clipboard"
 MIME_FILE="$CLIP.mime"
 
 target=""

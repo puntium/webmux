@@ -13,7 +13,7 @@ case "$1" in
   *) exit 4 ;; # xdg-open's "action failed" — local files can't open remotely
 esac
 
-DIR="${WEBMUX_CLIPBOARD_DIR:-/tmp/webmux-pastes}"
+DIR="${WEBMUX_CLIPBOARD_DIR:-/tmp/webmux-pastes-$(id -un)}"
 tmp="$DIR/.spool-$$"
 printf '%s\n%s\n' "${WEBMUX_SESSION:-}" "$1" > "$tmp" 2>/dev/null || exit 4
 # Rename into place so the server's watcher never reads a half-written file.

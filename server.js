@@ -171,9 +171,12 @@ route('POST', '/api/sessions', async (req, res) => {
 // Pasted images land in PASTE_DIR. The latest one is also written to the
 // "clipboard" slot that the xclip/xsel shims serve, so clipboard-reading CLIs
 // (Claude Code) see it natively. Must match the pty host's PASTE_DIR (it
-// exports WEBMUX_CLIPBOARD_DIR into sessions).
-const PASTE_DIR = path.join(os.tmpdir(), 'webmux-pastes');
-fs.mkdirSync(PASTE_DIR, { recursive: true });
+// exports WEBMUX_CLIPBOARD_DIR into sessions) — so main() adopts whatever
+// dir the host's ping advertises; this per-user default only covers hosts
+// old enough not to advertise one. Per-user because /tmp is shared: a fixed
+// name is owned by whichever user's webmux touched it first, and every other
+// user's writes then fail with EACCES.
+let PASTE_DIR = path.join(os.tmpdir(), `webmux-pastes-${os.userInfo().username}`);
 const PASTE_EXT = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -203,13 +206,21 @@ function isClaudeForeground(session) {
 }
 
 // Update the clipboard slot the xclip/xsel shims serve. Returns the decoded
-// image, or null if the payload isn't a supported image.
+// image, or null if the payload isn't a supported image or the slot can't be
+// written — never throws: clipboard syncs arrive on every window focus, and
+// an unwritable slot (e.g. a paste dir owned by another user, before it
+// became per-user) must not take the server down with it.
 function writeClipboardSlot({ mime, data }) {
   const ext = PASTE_EXT[mime];
   if (!ext || typeof data !== 'string') return null;
   const buf = Buffer.from(data, 'base64');
-  fs.writeFileSync(path.join(PASTE_DIR, 'clipboard'), buf);
-  fs.writeFileSync(path.join(PASTE_DIR, 'clipboard.mime'), mime);
+  try {
+    fs.writeFileSync(path.join(PASTE_DIR, 'clipboard'), buf);
+    fs.writeFileSync(path.join(PASTE_DIR, 'clipboard.mime'), mime);
+  } catch (err) {
+    console.error(`clipboard slot write failed (${path.join(PASTE_DIR, 'clipboard')}): ${err}`);
+    return null;
+  }
   return { buf, ext };
 }
 
@@ -227,7 +238,12 @@ function handlePasteImage(session, ws, msg) {
     ws.send(JSON.stringify({ type: 'paste-result', mode: 'claude' }));
   } else {
     const file = path.join(PASTE_DIR, `paste-${Date.now()}-${pasteSeq++}.${ext}`);
-    fs.writeFileSync(file, buf);
+    try {
+      fs.writeFileSync(file, buf);
+    } catch (err) {
+      console.error(`paste file write failed (${file}): ${err}`);
+      return;
+    }
     session.input(`'${file}' `);
     ws.send(JSON.stringify({ type: 'paste-result', mode: 'path', path: file }));
   }
@@ -285,14 +301,38 @@ function processOpenSpool() {
   }
 }
 
-// Spool files left over from before this server started are stale requests;
-// popping them up now would be surprising. Drop them.
-for (const n of fs.readdirSync(PASTE_DIR)) {
-  if (n.startsWith('open-') || n.startsWith('.claimed-open-')) {
-    fs.rmSync(path.join(PASTE_DIR, n), { force: true });
+// Adopt a paste dir (the pty host's advertised one, or our default) and
+// start watching its spool. Called at startup and again if the host is
+// respawned with a different dir; failures are logged, not fatal — pastes
+// degrade, terminals keep working.
+let pasteWatcher = null;
+function initPasteDir(dir) {
+  // A host old enough not to advertise a dir used the fixed shared one, and
+  // its sessions' WEBMUX_CLIPBOARD_DIR still points there — follow it (slot
+  // writes there can fail for a second user; that's logged, not fatal).
+  dir = dir || path.join(os.tmpdir(), 'webmux-pastes');
+  if (dir !== PASTE_DIR) {
+    PASTE_DIR = dir;
+  } else if (pasteWatcher) {
+    return; // same dir, already watching
+  }
+  try {
+    if (pasteWatcher) pasteWatcher.close();
+    pasteWatcher = null;
+    fs.mkdirSync(PASTE_DIR, { recursive: true, mode: 0o700 });
+    // Spool files left over from before this server started are stale
+    // requests; popping them up now would be surprising. Drop them (each on
+    // its own — in a shared legacy dir some may belong to another user).
+    for (const n of fs.readdirSync(PASTE_DIR)) {
+      if (n.startsWith('open-') || n.startsWith('.claimed-open-')) {
+        try { fs.rmSync(path.join(PASTE_DIR, n), { force: true }); } catch { /* not ours */ }
+      }
+    }
+    pasteWatcher = fs.watch(PASTE_DIR, () => processOpenSpool());
+  } catch (err) {
+    console.error(`paste dir unusable (${PASTE_DIR}): ${err}`);
   }
 }
-fs.watch(PASTE_DIR, () => processOpenSpool());
 
 // ---------------------------------------------------------------------------
 // File browser API (Miller-columns widget). No sandboxing: terminals already
@@ -478,7 +518,10 @@ function watchHostEvents() {
   });
   sock.on('error', () => {}); // 'close' handles the retry
   sock.on('close', () => {
-    setTimeout(() => ensureHost(HOST_NAME).catch(() => {}).then(watchHostEvents), 1000);
+    setTimeout(() => ensureHost(HOST_NAME)
+      .then((pong) => initPasteDir(pong.pasteDir)) // a respawned host may advertise a new dir
+      .catch(() => {})
+      .then(watchHostEvents), 1000);
   });
 }
 
@@ -487,6 +530,9 @@ async function main() {
   // detached, so it — and every shell in it — outlives this server.
   const pong = await ensureHost(HOST_NAME);
   console.log(`pty host '${HOST_NAME}' up (pid ${pong.pid}, ${pong.sessions} session(s))`);
+  // Sessions inherit WEBMUX_CLIPBOARD_DIR from the host at creation, so the
+  // slot/spool dir follows the host's advert, not this payload's default.
+  initPasteDir(pong.pasteDir);
   watchHostEvents();
 
   const server = http.createServer((req, res) => {
