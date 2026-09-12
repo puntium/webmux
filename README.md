@@ -172,13 +172,13 @@ On a deployed host these run under the pushed node:
   report; the same lines go to `<userData>/logs/webmux.log` (rotated at
   1 MB). Passwords never appear — only which auth mode was used.
 - Click a URL in a terminal (plain text, via `@xterm/addon-web-links`, or an
-  OSC 8 hyperlink such as Claude Code's `/login` link) for a chooser: open
-  it in your default browser or copy it. Shift-click opens without asking.
+  OSC 8 hyperlink such as Claude Code's `/login` link) to open it in your
+  default browser. Shift-click copies it to the clipboard instead.
 - Programs that try to launch a browser on the host (`xdg-open`,
   `sensible-browser`, `x-www-browser`, `$BROWSER` — e.g. `gh pr view --web`,
   OAuth logins) hit shims in `shims/` instead: the URL is spooled to the
   server, which forwards it to the client viewing that session
-  (`WEBMUX_SESSION`), and the same chooser pops up there.
+  (`WEBMUX_SESSION`), which pops up an open/copy chooser.
 
 ## File browser
 
@@ -190,8 +190,8 @@ keys / `hjkl` like yazi. Selecting a file shows a preview column — text
 `/api/fs/preview`, and `/api/fs/raw`. Markdown files render by default
 (client-side, via `marked`, with raw HTML shown as text) with a Rendered /
 Source toggle in the preview header; relative images load through
-`/api/fs/raw`, web links go through the link chooser, and relative links
-navigate the browser to that entry. Files or folders dragged onto a column
+`/api/fs/raw`, web links open in the browser (shift-click copies), and
+relative links navigate the browser to that entry. Files or folders dragged onto a column
 upload into that column's directory — multiple at once is fine, and folders
 recreate their directory tree (empty subdirectories are skipped). Files or
 images pasted while the browser is focused upload into the rightmost

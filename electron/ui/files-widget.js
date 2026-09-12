@@ -22,7 +22,7 @@
 
 // Circular with app.js's import of this module, which is fine: both modules
 // only call across the cycle at runtime, never during evaluation.
-import { setStatus, showLinkModal } from './app.js';
+import { activateLink, setStatus, showLinkModal } from './app.js';
 import { API } from './env.js';
 
 export const isFilesId = (id) => typeof id === 'string' && id.startsWith('files-');
@@ -501,15 +501,17 @@ export function makeFilesTile(id) {
         else renderedView();
       };
       apply();
-      // Links: web URLs go through the app's link chooser like terminal
-      // links; relative ones navigate the browser to that entry.
+      // Links: web URLs behave like terminal links (click opens, ⇧-click
+      // copies); mailto: gets the chooser since the shell won't open it;
+      // relative ones navigate the browser to that entry.
       body.addEventListener('click', (ev) => {
         const a = ev.target.closest('a[href]');
         if (!a || !body.contains(a)) return;
         ev.preventDefault();
         const href = a.getAttribute('href');
         if (!href || href.startsWith('#')) return;
-        if (/^(https?|mailto):/i.test(href)) return showLinkModal(href, tile);
+        if (/^https?:/i.test(href)) return activateLink(ev, href);
+        if (/^mailto:/i.test(href)) return showLinkModal(href, tile);
         const local = resolveRelative(fileDir, href.split(/[#?]/)[0]);
         if (!local) return setStatus(`can't open ${href}`);
         state.dir = fsParent(local);

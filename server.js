@@ -270,7 +270,7 @@ route('POST', '/api/paste', async (req, res) => {
 // session id, line 2: URL) instead of opening anything. We watch the dir,
 // claim each file by rename (several webmux servers may share the spool), and
 // forward the URL to the browser client as an 'open-url' message — the client
-// shows the same open/copy chooser as a clicked terminal URL.
+// shows an open/copy chooser.
 // ---------------------------------------------------------------------------
 
 const wsClients = new Set(); // every attached browser socket

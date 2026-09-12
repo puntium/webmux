@@ -423,11 +423,11 @@ window.addEventListener('focus', syncClipboardImage);
 // Write text to the host (browser) clipboard, for OSC 52 copies from
 // programs in a session. The async API needs a secure context; fall back to
 // the legacy execCommand path on plain http.
-async function writeHostClipboard(text) {
+async function writeHostClipboard(text, doneMsg = 'clipboard set from terminal') {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
-      setStatus('clipboard set from terminal');
+      setStatus(doneMsg);
       return;
     }
   } catch { /* fall through to execCommand */ }
@@ -442,7 +442,7 @@ async function writeHostClipboard(text) {
   try { ok = document.execCommand('copy'); } catch {}
   ta.remove();
   prevFocus?.focus?.();
-  setStatus(ok ? 'clipboard set from terminal' : 'clipboard write blocked by the browser');
+  setStatus(ok ? doneMsg : 'clipboard write blocked by the browser');
 }
 
 // 'open-url' frames the server could not target at one session are broadcast
@@ -453,11 +453,19 @@ const seenOpenIds = new Set();
 // client, where window.open never opens in-window: the client's
 // window-open handler routes http(s) URLs to shell.openExternal.
 const openInBrowser = (uri) => window.open(uri, '_blank', 'noopener');
+const copyLink = (uri) => writeHostClipboard(uri, 'link copied');
 
-// Clicking a detected URL in a terminal pops this chooser instead of xterm's
-// default open-immediately behavior (shift-click skips it — see the
-// web-links handler in Tile). Returns focus to the tile on close. Also
-// used by the file browser for links in rendered markdown.
+// Clicking a detected URL (terminal web-links / OSC 8, markdown previews)
+// opens it in the browser straight away; shift-click copies it instead.
+export function activateLink(ev, uri) {
+  if (ev.shiftKey) copyLink(uri);
+  else openInBrowser(uri);
+}
+
+// Open/copy chooser for URLs that arrive without a click — a program in a
+// session ran xdg-open (see the 'open-url' handler in Tile) — so there is
+// no modifier to express intent. Returns focus to the tile on close. Also
+// used by the file browser for mailto: links, which the shell won't open.
 export function showLinkModal(uri, tile) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -465,7 +473,6 @@ export function showLinkModal(uri, tile) {
     <div class="modal link-modal" role="dialog" aria-label="Link options">
       <div class="link-url"></div>
       <div class="actions">
-        <span class="hint">⇧-click a link to open it without asking</span>
         <button class="link-cancel">Cancel</button>
         <button class="link-copy">Copy</button>
         <button class="link-open primary">Open in browser</button>
@@ -492,7 +499,7 @@ export function showLinkModal(uri, tile) {
   overlay.querySelector('.link-cancel').addEventListener('click', close);
   overlay.querySelector('.link-copy').addEventListener('click', () => {
     close(); // close first: execCommand fallback needs focus off the modal
-    writeHostClipboard(uri);
+    copyLink(uri);
   });
   overlay.querySelector('.link-open').addEventListener('click', () => {
     openInBrowser(uri);
@@ -638,12 +645,9 @@ function makeTile(sessionId) {
         // addon below. Without this option its fallback is window.confirm()
         // followed by a URL-less window.open(), which the Electron shell
         // denies — so the native "Do you want to navigate…" sheet appeared
-        // and OK did nothing. Route them to the same chooser as plain URLs.
+        // and OK did nothing. Route them like plain URLs: open, ⇧ copies.
         linkHandler: {
-          activate: (ev, uri) => {
-            if (ev.shiftKey) openInBrowser(uri);
-            else showLinkModal(uri, this);
-          },
+          activate: activateLink,
           allowNonHttpProtocols: false, // mailto:, file: etc. stay inert
         },
       });
@@ -651,13 +655,10 @@ function makeTile(sessionId) {
       term.loadAddon(fit);
 
       // URL detection: the web-links addon underlines http(s) URLs on hover;
-      // a click lands here instead of opening directly, so the user chooses
-      // between copying and opening. Shift-click skips the chooser and goes
-      // straight to the browser.
+      // a click opens the URL in the system browser, shift-click copies it.
       term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => {
         ev.preventDefault();
-        if (ev.shiftKey) openInBrowser(uri);
-        else showLinkModal(uri, this);
+        activateLink(ev, uri);
       }));
 
       // OSC 52 (ESC ] 52 ; <target> ; <base64> BEL): programs setting the
@@ -802,8 +803,8 @@ function makeTile(sessionId) {
             ? 'image in clipboard — Ctrl+V forwarded to Claude'
             : `pasted image → ${msg.path}`);
         } else if (msg.type === 'open-url') {
-          // A program in the session ran xdg-open (see shims/): offer the
-          // same chooser as a clicked terminal link.
+          // A program in the session ran xdg-open (see shims/): nobody
+          // clicked anything, so offer an open/copy chooser.
           if (!seenOpenIds.has(msg.id)) {
             seenOpenIds.add(msg.id);
             showLinkModal(msg.url, this);
