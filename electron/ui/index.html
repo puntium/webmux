@@ -207,6 +207,9 @@
       min-height: 0;
     }
     .column.full { flex-basis: 100%; max-width: 100%; } /* ⌘F: the whole window */
+    /* Keeps the strip's old scroll extent open while a layout animation
+       runs (app.js animateStrip). */
+    .strip-extent { position: absolute; top: 0; width: 1px; height: 1px; visibility: hidden; pointer-events: none; }
     /* Divider between stacked panes: drag to reassign heights. */
     .divider {
       flex: none;

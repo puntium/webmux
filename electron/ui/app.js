@@ -11,6 +11,9 @@
    full-window toggle, ⌘+arrows/hjkl to focus, ⇧⌘ to move a pane within
    its stack, out of it into a column of its own, or its whole column, ⌥⌘
    to merge it into the neighbouring column — see paneCommandForKey).
+   Structural changes animate: panes travel to their new places while
+   their stacks and columns close up or make room (animateStrip), and a
+   closing pane collapses in place (animateRemoval).
    Sessions live on the server; the layout is saved to
    localStorage — per origin, so per host and per client — and a reload
    restores both the sessions (from headless snapshots) and the arrangement.
@@ -162,20 +165,27 @@ function loadLayout() {
 
 // Structural render: rebuilds the strip. Focus changes alone don't come
 // through here (setFocus just retargets classes), so the terminals aren't
-// re-attached — and re-fitted — for every ⌘←.
-function render() {
+// re-attached — and re-fitted — for every ⌘←. With animate, every pane and
+// divider travels from where it was to where it ends up (animateStrip).
+function render({ animate = false } = {}) {
   if (!allIds().includes(focusedId)) focusedId = columns[0]?.active ?? null;
-  const scrollLeft = layoutEl.scrollLeft; // replaceChildren would reset it
+  const scrollLeft = layoutEl.scrollLeft; // replaceChildren would reset it (and settling could clamp it)
+  const before = animate && !reducedMotion() ? snapshotStrip() : null;
+  settleStrip();
   layoutEl.replaceChildren();
   for (const col of columns) layoutEl.appendChild(buildColumn(col));
-  layoutEl.scrollLeft = scrollLeft;
   // xterm needs its element in the DOM before open(); open any new tiles now.
   for (const tile of tiles.values()) tile.openIfNeeded();
   applyColumnWidths();
+  if (before) animateStrip(before); // measures the final layout, then lifts the panes out of it
+  layoutEl.scrollLeft = scrollLeft; // after animateStrip: the strip keeps its old extent while animating
+  if (before) chaseStripEnd();
   fitAll();
   updateTitle();
   revealFocused();
 }
+
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // The title is this page's one channel to the Electron client (main.js
 // page-title-updated): the pane count, which it totals across hosts in the
@@ -323,8 +333,8 @@ const SCROLL_TAU_MS = 60; // time constant; ~95% of the way in 3τ
 let chase = null; // { target, pos, last } while animating
 function scrollStripTo(target) {
   target = Math.max(0, Math.min(Math.round(target), layoutEl.scrollWidth - layoutEl.clientWidth));
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    chase = null;
+  if (reducedMotion()) {
+    endChase();
     layoutEl.scrollLeft = target;
     return;
   }
@@ -340,13 +350,20 @@ function chaseStep(now) {
   const diff = chase.target - chase.pos;
   if (Math.abs(diff) < 0.5) {
     layoutEl.scrollLeft = chase.target;
-    chase = null;
+    endChase();
     return;
   }
   const k = 1 - Math.exp(-dt / SCROLL_TAU_MS);
   chase.pos += Math.sign(diff) * Math.max(Math.abs(diff) * k, Math.min(1, Math.abs(diff)));
   layoutEl.scrollLeft = chase.pos;
   requestAnimationFrame(chaseStep);
+}
+// The chase is over (arrived, or the hand took over): the old strip extent
+// a layout animation may have been holding open (see animateStrip) can go
+// once nothing else needs it.
+function endChase() {
+  chase = null;
+  if (!layoutAnim) extentKeeper?.remove();
 }
 
 // Column width rule. Widths come in two settings, in terminal cells:
@@ -1014,6 +1031,217 @@ function makeTile(sessionId) {
   return tile;
 }
 
+// ---------------------------------------------------------------------------
+// Layout animation: panes travel to their new places
+// ---------------------------------------------------------------------------
+
+// A structural change (a new pane, ⌥⌘↩, a pane merged into the next column,
+// expelled into one of its own, swapped, ⌘F) re-renders the strip; this
+// animates the difference. render() snapshots every pane's and divider's
+// box before the rebuild (snapshotStrip) and, once the new DOM has laid
+// out, animateStrip measures where each ends up, lifts all of them out of
+// the flow (position: absolute in strip coordinates) and animates each
+// from its old box to its final one — so a moved pane flies from its old
+// slot to its new one while the stacks it leaves and joins close up and
+// make room, its old column shrinks away and the columns beside it slide
+// over, all on one clock. A pane with no old box (a fresh terminal) grows
+// from a zero-size box at the edge of the neighbour it opens beside — the
+// pane above it in its stack, else the column to its left — and fades in.
+// Every pane's body is pinned at its final size meanwhile, so the terminal
+// is fitted once and the animating box clips it rather than reflowing it.
+// The focused pane — the one the command acted on — sits on top of the
+// rest wherever boxes overlap in flight. When the animations end the
+// inline styles are cleared and the flow layout takes over at exactly the
+// geometry they arrived at. Columns keep their rule-driven widths
+// throughout (they never depended on their content), so the strip's
+// scroll geometry is final from the first frame; a hidden keeper holds
+// the old extent open so a strip that got narrower can chase its new end
+// smoothly instead of clamping. Dividers match by their index in a column
+// matched by its panes (matchColumns): the divider a merge leaves between
+// the survivors is the one that separated the top of them from the
+// leaver, and it slides down as the survivors grow.
+const MOVE_MS = 200;
+const MOVE_EASE = 'cubic-bezier(0.4, 0, 0.2, 1)';
+const STACK_GAP_PX = 8; // divider height + its margins: pane-to-pane distance in a stack
+let layoutAnim = null; // { anims, els } while a structural change is animating
+let extentKeeper = null; // absolute 1px box that keeps the strip's old scroll extent
+
+// Box in strip coordinates: relative to #layout's padding box and unscrolled,
+// so it holds while the strip scrolls underneath (absolute children of the
+// strip scroll with its content).
+function stripRect(el) {
+  const r = el.getBoundingClientRect();
+  const base = layoutEl.getBoundingClientRect();
+  return {
+    left: r.left - base.left + layoutEl.scrollLeft,
+    top: r.top - base.top + layoutEl.scrollTop,
+    width: r.width,
+    height: r.height,
+  };
+}
+
+// Old boxes: panes by id, columns in order with their pane ids and
+// dividers' boxes. Mid-flight boxes are read as they are — a change that
+// lands while the previous one is still animating continues from there.
+function snapshotStrip() {
+  const panes = new Map();
+  const cols = [];
+  for (const colEl of layoutEl.querySelectorAll(':scope > .column')) {
+    const ids = [];
+    const dividers = [];
+    for (const el of colEl.children) {
+      if (el.classList.contains('pane')) {
+        ids.push(el.dataset.id);
+        panes.set(el.dataset.id, stripRect(el));
+      } else if (el.classList.contains('divider')) {
+        dividers.push(stripRect(el));
+      }
+    }
+    cols.push({ ids, rect: stripRect(colEl), dividers });
+  }
+  return { panes, cols, extent: layoutEl.scrollWidth };
+}
+
+// Pairs each new column with the old column it shares the most panes with
+// (greedy, each old column at most once): the column a pane merged into is
+// the one that already held the others, and a column that a pane just
+// split out of keeps its identity through the survivors.
+function matchColumns(oldCols, colEls) {
+  const pairs = [];
+  colEls.forEach((colEl, n) => {
+    const ids = [...colEl.querySelectorAll(':scope > .pane')].map((p) => p.dataset.id);
+    oldCols.forEach((old, o) => {
+      const overlap = ids.filter((id) => old.ids.includes(id)).length;
+      if (overlap) pairs.push({ n, o, overlap });
+    });
+  });
+  pairs.sort((a, b) => b.overlap - a.overlap);
+  const match = colEls.map(() => null);
+  const used = new Set();
+  for (const { n, o } of pairs) {
+    if (match[n] || used.has(o)) continue;
+    match[n] = oldCols[o];
+    used.add(o);
+  }
+  return match;
+}
+
+function animateStrip(before) {
+  const colEls = [...layoutEl.querySelectorAll(':scope > .column')];
+  if (!colEls.length) return;
+  const oldCols = matchColumns(before.cols, colEls);
+  const isPane = (el) => el?.classList.contains('pane') === true;
+  const oldPane = (el) => (isPane(el) ? before.panes.get(el.dataset.id) : null);
+
+  // Where an element with no old box starts: zero-height at the bottom edge
+  // of the pane above it (a divider sits its 1px margin below), else at the
+  // top edge of the one below; a column of its own opens zero-width at the
+  // edge of the neighbouring column; the very first pane grows in place.
+  const entryRect = (el, to, n) => {
+    const pane = isPane(el);
+    const gap = pane ? STACK_GAP_PX : 1;
+    const above = oldPane(pane ? el.previousElementSibling?.previousElementSibling : el.previousElementSibling);
+    if (above) return { left: above.left, width: above.width, top: above.top + above.height + gap, height: 0 };
+    const below = oldPane(pane ? el.nextElementSibling?.nextElementSibling : el.nextElementSibling);
+    if (below) return { left: below.left, width: below.width, top: below.top - gap, height: 0 };
+    const l = oldCols[n - 1]?.rect;
+    if (l) return { left: l.left + l.width + COL_GAP_PX, width: 0, top: to.top, height: to.height };
+    const r = oldCols[n + 1]?.rect;
+    if (r) return { left: r.left - COL_GAP_PX, width: 0, top: to.top, height: to.height };
+    return { ...to, width: 0 };
+  };
+
+  // Measure everything's final box first: the first element lifted out of
+  // the flow would move the rest.
+  const plan = [];
+  colEls.forEach((colEl, n) => {
+    let dividerIndex = 0;
+    for (const el of colEl.children) {
+      const to = stripRect(el);
+      let from;
+      let body = null;
+      if (isPane(el)) {
+        from = before.panes.get(el.dataset.id);
+        body = el.querySelector(':scope > .pane-body');
+        body = { el: body, rect: body.getBoundingClientRect() };
+      } else if (el.classList.contains('divider')) {
+        from = oldCols[n]?.dividers[dividerIndex++];
+      } else {
+        continue;
+      }
+      plan.push({ el, from: from || entryRect(el, to, n), to, fresh: !from, body });
+    }
+  });
+
+  const box = (r) => ({ left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  const opts = { duration: MOVE_MS, easing: MOVE_EASE, fill: 'forwards' };
+  const focusedKey = String(focusedId);
+  const anims = [];
+  const els = [];
+  for (const { el, from, to, fresh, body } of plan) {
+    if (body) {
+      body.el.style.width = `${body.rect.width}px`;
+      body.el.style.flex = `0 0 ${body.rect.height}px`;
+      // The unfocused-fade overlay anchors to the body; unanchored, it
+      // covers the whole animating box, so the part of a shrinking box
+      // its (final-size) content no longer fills dims like the rest.
+      body.el.style.position = 'static';
+    }
+    let zIndex = 1; // dividers
+    if (body) zIndex = el.dataset.id === focusedKey ? 3 : 2;
+    Object.assign(el.style, { position: 'absolute', margin: '0', zIndex });
+    els.push(el);
+    anims.push(el.animate([box(from), box(to)], opts));
+    if (fresh && body) anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], opts));
+  }
+  if (!anims.length) return;
+
+  // Hold the old scroll extent open (nothing in flow reaches it any more)
+  // for as long as the animation, and any chase it starts, needs it.
+  extentKeeper?.remove();
+  extentKeeper = document.createElement('div');
+  extentKeeper.className = 'strip-extent';
+  extentKeeper.style.left = `${before.extent - 1}px`;
+  layoutEl.appendChild(extentKeeper);
+
+  const token = { anims, els };
+  layoutAnim = token;
+  Promise.race([
+    Promise.all(anims.map((a) => a.finished)).catch(() => {}),
+    new Promise((r) => setTimeout(r, MOVE_MS + 50)),
+  ]).then(() => {
+    if (layoutAnim === token) settleStrip();
+  });
+}
+
+// A strip that got narrower while scrolled past its new end eases to that
+// end (the keeper holds the old extent open meanwhile) rather than
+// clamping to it the moment the animation settles.
+function chaseStripEnd() {
+  const last = [...layoutEl.querySelectorAll(':scope > .column')].at(-1);
+  if (!last) return;
+  const max = Math.max(0, last.offsetLeft + last.offsetWidth + STRIP_PAD_PX - layoutEl.clientWidth);
+  if (layoutEl.scrollLeft > max) scrollStripTo(max);
+}
+
+// Ends a layout animation, if one is running: the flow layout takes over
+// at the geometry the boxes were headed for. Also run before a close
+// animation measures the stack it is about to collapse.
+function settleStrip() {
+  if (!layoutAnim) return;
+  const { anims, els } = layoutAnim;
+  layoutAnim = null;
+  for (const a of anims) a.cancel();
+  for (const el of els) {
+    for (const p of ['position', 'left', 'top', 'width', 'height', 'margin', 'z-index']) el.style.removeProperty(p);
+    const body = el.querySelector(':scope > .pane-body');
+    if (body) {
+      for (const p of ['width', 'flex', 'position']) body.style.removeProperty(p);
+    }
+  }
+  if (!chase) extentKeeper?.remove();
+}
+
 // Closing animation. A pane alone in its column takes the column with it:
 // the column shrinks to zero width with its left edge fixed and the
 // neighbours slide in from the right (they widen as they go if the rule
@@ -1030,7 +1258,8 @@ function makeTile(sessionId) {
 const CLOSE_MS = 180;
 const CLOSE_EASE = 'ease-in-out';
 async function animateRemoval(id) {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (reducedMotion()) return;
+  settleStrip(); // measure the stack at rest, not mid-flight
   const pane = paneEl(id);
   const col = columnOf(id);
   if (!pane || !col) return;
@@ -1104,7 +1333,7 @@ async function removeTile(sessionId, killServerSession) {
   discardWidgetState(sessionId);
   removeSessionFromLayout(sessionId);
   saveLayout();
-  render();
+  render({ animate: true }); // smooths the last few px between the collapsed state and the new layout
   tiles.get(focusedId)?.focus();
 }
 
@@ -1129,7 +1358,7 @@ function openInNewColumn(id) {
   columns.splice(ci === -1 ? columns.length : ci + 1, 0, newColumn(id));
   focusedId = id;
   saveLayout();
-  render();
+  render({ animate: true });
   tiles.get(id)?.focus();
 }
 
@@ -1149,7 +1378,7 @@ async function newSessionBelow() {
   insertIntoColumn(col, id, col.panes.indexOf(focusedId) + 1);
   focusedId = id;
   saveLayout();
-  render();
+  render({ animate: true });
   tiles.get(id)?.focus();
 }
 
@@ -1179,7 +1408,7 @@ function focusInColumn(dir) {
 // keyboard focus back in its content.
 function commitMove() {
   saveLayout();
-  render();
+  render({ animate: true });
   tiles.get(focusedId)?.focus();
 }
 
@@ -1389,7 +1618,7 @@ layoutEl.addEventListener('wheel', (ev) => {
   }
   ev.preventDefault();
   ev.stopPropagation();
-  chase = null; // the hand wins over an in-flight reveal
+  endChase(); // the hand wins over an in-flight reveal
   layoutEl.scrollLeft += ev.deltaX;
 }, { passive: false, capture: true });
 
