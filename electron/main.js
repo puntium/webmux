@@ -129,7 +129,7 @@ const findProfile = (name) => store.profiles.find((p) => p.name === name);
 // (broadcastSettings). Main only keeps the values well-formed — the theme
 // list lives in the page (ui/settings.js), which falls back to dark for an
 // id it doesn't know.
-const SETTINGS_DEFAULTS = Object.freeze({ theme: 'dark', unfocusedFade: 40 });
+const SETTINGS_DEFAULTS = Object.freeze({ theme: 'dark', unfocusedFade: 40, minCols: 90 });
 
 function sanitizeSettings(raw, base = SETTINGS_DEFAULTS) {
   const s = { ...base };
@@ -137,6 +137,8 @@ function sanitizeSettings(raw, base = SETTINGS_DEFAULTS) {
     if (typeof raw.theme === 'string' && /^[a-z0-9-]{1,32}$/.test(raw.theme)) s.theme = raw.theme;
     const fade = Number(raw.unfocusedFade);
     if (Number.isFinite(fade)) s.unfocusedFade = Math.round(Math.min(100, Math.max(0, fade)));
+    const cols = Number(raw.minCols);
+    if (Number.isFinite(cols)) s.minCols = Math.round(Math.min(400, Math.max(40, cols)));
   }
   return s;
 }
@@ -284,16 +286,16 @@ function show(name) {
   broadcast();
 }
 
-// The window title carries the fleet summary ("webmux — 2 hosts · 7 tabs");
-// per-connection tab counts come from each page titling itself
-// "webmux — N tabs" (see page-title-updated in createConnection).
+// The window title carries the fleet summary ("webmux — 2 hosts · 7 panes");
+// per-connection pane counts come from each page titling itself
+// "webmux — N panes" (see page-title-updated in createConnection).
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 function updateTitle() {
   if (!win) return;
-  const tabs = [...conns.values()].reduce((n, c) => n + (c.tabCount || 0), 0);
+  const panes = [...conns.values()].reduce((n, c) => n + (c.paneCount || 0), 0);
   win.setTitle(conns.size
-    ? `webmux — ${plural(conns.size, 'host')} · ${plural(tabs, 'tab')}`
+    ? `webmux — ${plural(conns.size, 'host')} · ${plural(panes, 'pane')}`
     : 'webmux');
 }
 
@@ -314,7 +316,7 @@ function snapshot() {
 // Push connection states to the client-owned pages (header pills + connect
 // page). Remote pages get nothing.
 function broadcast() {
-  updateTitle(); // any conn change may move the host/tab totals
+  updateTitle(); // any conn change may move the host/pane totals
   for (const view of [headerView, connectView]) {
     if (view) view.webContents.send('conns', snapshot());
   }
@@ -392,13 +394,13 @@ function createConnection(profile) {
   };
 
   const wc = conn.view.webContents;
-  // The served page titles itself "webmux — N tabs[ · offline]"; harvest
-  // the count so the window title can total tabs across hosts, and the
+  // The served page titles itself "webmux — N panes[ · offline]"; harvest
+  // the count so the window title can total panes across hosts, and the
   // offline marker — the page's own verdict on its session sockets, which
   // is the only channel it has to main (remote pages get no IPC bridge).
-  // Anything unparseable (blank page, error page) counts as zero tabs.
+  // Anything unparseable (blank page, error page) counts as zero panes.
   wc.on('page-title-updated', (_ev, title) => {
-    conn.tabCount = Number(/(\d+) tab/.exec(title)?.[1]) || 0;
+    conn.paneCount = Number(/(\d+) pane/.exec(title)?.[1]) || 0;
     const offline = /· offline$/.test(title);
     if (offline !== conn.pageOffline) {
       conn.pageOffline = offline;
@@ -898,7 +900,7 @@ function registerIpc() {
     log.info(name, 'restart sessions requested', { instance: String(profile.instance || '') || 'default' });
     const r = await restartRemoteSessions(profile, env);
     log[r.error ? 'error' : 'info'](name, `restart sessions: ${r.error || r.msg}`);
-    // A live page is now full of tabs whose sessions no longer exist —
+    // A live page is now full of panes whose sessions no longer exist —
     // reload it so it starts clean against the fresh host.
     const conn = conns.get(name);
     if (r.ok && conn && pageLive(conn)) {
@@ -949,13 +951,44 @@ const CHROME_EVENTS = {
   'new-files': 'webmux-new-files',
   settings: 'webmux-settings-open', // the settings panel is drawn by the page
 };
+// Pane menu: the page's layout commands (app.js PANE_COMMANDS), relayed as
+// one 'webmux-pane' event carrying the command. The menu shows their
+// shortcuts but doesn't register them (registerAccelerator: false): the
+// page handles the keys itself, so ⌘←/→ still move the caret in text
+// fields and the chords work without a round trip through main.
+const PANE_MENU = [
+  ['New Terminal', 'Cmd+Return', 'new-terminal'],
+  ['New Terminal Below', 'Alt+Cmd+Return', 'new-terminal-below'],
+  ['New File Browser', 'Shift+Cmd+Return', 'new-files'],
+  ['Close Pane', 'Cmd+W', 'close-pane'],
+  ['Full Window', 'Cmd+F', 'toggle-full'],
+  null,
+  ['Focus Left', 'Cmd+Left', 'focus-left'],
+  ['Focus Right', 'Cmd+Right', 'focus-right'],
+  ['Focus Up', 'Cmd+Up', 'focus-up'],
+  ['Focus Down', 'Cmd+Down', 'focus-down'],
+  null,
+  ['Move Column Left', 'Shift+Cmd+Left', 'move-column-left'],
+  ['Move Column Right', 'Shift+Cmd+Right', 'move-column-right'],
+  ['Move Pane Up', 'Shift+Cmd+Up', 'move-pane-up'],
+  ['Move Pane Down', 'Shift+Cmd+Down', 'move-pane-down'],
+  null,
+  ['Merge or Split Out Left', 'Alt+Cmd+Left', 'consume-expel-left'],
+  ['Merge or Split Out Right', 'Alt+Cmd+Right', 'consume-expel-right'],
+];
+const PANE_COMMANDS = new Set(PANE_MENU.filter(Boolean).map(([, , cmd]) => cmd));
 function chromeCmd(cmd) {
-  const event = CHROME_EVENTS[cmd];
   const conn = activeName && conns.get(activeName);
-  if (!event || !conn || !pageLive(conn)) return { error: 'no active page' };
-  conn.view.webContents
-    .executeJavaScript(`window.dispatchEvent(new Event(${JSON.stringify(event)}))`)
-    .catch(() => {});
+  if (!conn || !pageLive(conn)) return { error: 'no active page' };
+  let js;
+  if (CHROME_EVENTS[cmd]) {
+    js = `window.dispatchEvent(new Event(${JSON.stringify(CHROME_EVENTS[cmd])}))`;
+  } else if (PANE_COMMANDS.has(cmd)) {
+    js = `window.dispatchEvent(new CustomEvent('webmux-pane', { detail: ${JSON.stringify(cmd)} }))`;
+  } else {
+    return { error: 'unknown command' };
+  }
+  conn.view.webContents.executeJavaScript(js).catch(() => {});
   return { ok: true };
 }
 
@@ -1178,13 +1211,16 @@ function buildMenu() {
         { label: 'Connections…', accelerator: 'CmdOrCtrl+Shift+O', click: () => userShow(null) },
         { label: 'Reconnect', accelerator: 'CmdOrCtrl+Shift+R', click: reconnectActive },
         { label: 'Open Config File', click: () => shell.openPath(configFile()) },
-        { label: 'Connection Log…', accelerator: 'CmdOrCtrl+Shift+L', click: openLogWindow },
+        // ⌃⌘L rather than ⌘⇧L: the page's pane chords use ⌘⇧ + hjkl.
+        { label: 'Connection Log…', accelerator: 'Ctrl+Cmd+L', click: openLogWindow },
         { type: 'separator' },
         // Opens the page's settings panel; needs a host page on screen.
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => chromeCmd('settings') },
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
+        // Hide / Hide Others lose their ⌘H / ⌥⌘H accelerators: those are
+        // pane chords (focus left / merge left with the vim key) in the page.
+        { label: 'Hide webmux', click: () => app.hide() },
+        { label: 'Hide Others', click: () => Menu.sendActionToFirstResponder('hideOtherApplications:') },
         { role: 'unhide' },
         { type: 'separator' },
         { role: 'quit' },
@@ -1204,8 +1240,14 @@ function buildMenu() {
         { role: 'togglefullscreen' },
       ],
     },
-    // Deliberately no windowMenu role: it carries Cmd+W (close), which is
-    // muscle-memory fatal while typing in a terminal.
+    {
+      label: 'Pane',
+      submenu: PANE_MENU.map((item) => (item
+        ? { label: item[0], accelerator: item[1], registerAccelerator: false, click: () => chromeCmd(item[2]) }
+        : { type: 'separator' })),
+    },
+    // Deliberately no windowMenu role: it carries Cmd+W (close window);
+    // the page uses ⌘W to close a pane instead.
     {
       label: 'Window',
       submenu: [

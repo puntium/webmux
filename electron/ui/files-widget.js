@@ -1,6 +1,6 @@
-/* File browser widget (Finder-style Miller columns) — a client-side tab type.
+/* File browser widget (Finder-style Miller columns) — a client-side pane type.
 
-   A files tab lives entirely in the browser: its id is `files-<random>`
+   A files pane lives entirely in the browser: its id is `files-<random>`
    (never a server session id) and its state ({ dir, cursor }) persists in
    localStorage next to the layout. Columns show the ancestor chain of `dir`;
    the cursor entry gets one extra column — a listing for directories, a
@@ -17,7 +17,7 @@
    position, removed ones collapse and new ones grow in, and the horizontal
    scroll eases to the newest column instead of jumping.
 
-   app.js owns the layout/tab machinery and registers the tile returned by
+   app.js owns the layout machinery and registers the tile returned by
    makeFilesTile() — the tile interface it expects is
    { root, openIfNeeded(), fitAndReport(), focus(), term, ws, label() }. */
 
@@ -132,8 +132,7 @@ function formatSize(bytes) {
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
 }
 
-// Native file drops only — tab drags (text/plain) must fall through to the
-// pane's own drop handling. Dropped directories are walked recursively so
+// Native file drops only (text/plain drags are not files and fall through). Dropped directories are walked recursively so
 // their contents upload under matching relative paths. Uploads are
 // { file, name } pairs where name may contain '/' for files inside a
 // dropped folder; empty directories are not recreated.
@@ -364,7 +363,7 @@ export function makeFilesTile(id) {
       if (!el.contains(ev.relatedTarget)) el.classList.remove('drop-target');
     });
     el.addEventListener('drop', async (ev) => {
-      if (!ev.dataTransfer?.files.length) return; // tab drag — bubble to the pane
+      if (!ev.dataTransfer?.files.length) return; // not a file drop
       ev.preventDefault();
       ev.stopPropagation();
       el.classList.remove('drop-target');
@@ -571,7 +570,7 @@ export function makeFilesTile(id) {
 
   let gen = 0; // render generation, guards async results from stale renders
   let rightmostDir = null; // deepest directory column shown — the paste target
-  let previewName = null; // file under the cursor (preview showing) — names the tab
+  let previewName = null; // file under the cursor (preview showing) — names the pane
   async function rerender() {
     const g = ++gen;
     const chain = fsChain(state.dir);
@@ -654,7 +653,7 @@ export function makeFilesTile(id) {
       el.classList.add('leaving');
       const drop = (ev) => { if (!ev || ev.target === el) el.remove(); };
       el.addEventListener('animationend', drop);
-      setTimeout(drop, 300); // in case animationend never fires (hidden tab)
+      setTimeout(drop, 300); // in case animationend never fires (hidden pane)
     }
     return animate;
   }
@@ -763,12 +762,12 @@ export function makeFilesTile(id) {
     labelEl: null,
     opened: false,
     label: () => previewName || fsBase(state.dir),
-    focus() { colsEl.focus(); },
+    focus() { colsEl.focus({ preventScroll: true }); }, // app.js animates the strip itself
     fitAndReport() {}, // no terminal geometry to report
     openIfNeeded() {
       if (!root.isConnected) return;
       if (this.opened) {
-        // re-attached after a tab switch: restore the rightmost-column view
+        // re-attached after a layout re-render: restore the rightmost-column view
         requestAnimationFrame(() => { colsEl.scrollLeft = colsEl.scrollWidth; });
         return;
       }

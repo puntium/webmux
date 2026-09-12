@@ -129,23 +129,23 @@ const connState = async (name) =>
     method, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }));
   let res = await settingsReq('GET');
-  assert.deepStrictEqual(await res.json(), { theme: 'dark', unfocusedFade: 40 }, 'default settings');
-  assert.deepStrictEqual(await handlers['settings:get'](), { theme: 'dark', unfocusedFade: 40 }, 'IPC reads the same');
+  assert.deepStrictEqual(await res.json(), { theme: 'dark', unfocusedFade: 40, minCols: 90 }, 'default settings');
+  assert.deepStrictEqual(await handlers['settings:get'](), { theme: 'dark', unfocusedFade: 40, minCols: 90 }, 'IPC reads the same');
   sent.length = 0;
-  res = await settingsReq('PUT', { theme: 'light', unfocusedFade: '72.4', junk: 1 });
+  res = await settingsReq('PUT', { theme: 'light', unfocusedFade: '72.4', minCols: '100', junk: 1 });
   assert.strictEqual(res.status, 200);
-  assert.deepStrictEqual(await res.json(), { theme: 'light', unfocusedFade: 72 }, 'PUT sanitizes and echoes');
-  assert.deepStrictEqual(readStore().settings, { theme: 'light', unfocusedFade: 72 }, 'settings persisted');
+  assert.deepStrictEqual(await res.json(), { theme: 'light', unfocusedFade: 72, minCols: 100 }, 'PUT sanitizes and echoes');
+  assert.deepStrictEqual(readStore().settings, { theme: 'light', unfocusedFade: 72, minCols: 100 }, 'settings persisted');
   assert.strictEqual(sent.filter((m) => m.ch === 'settings').length, 2, 'pushed to header + connect pages');
   assert.strictEqual(FakeBaseWindow.last.bg, '#dfe1e8', 'window background follows the theme');
-  res = await settingsReq('PUT', { theme: 'Bad Theme!', unfocusedFade: 500 });
-  assert.deepStrictEqual(await res.json(), { theme: 'light', unfocusedFade: 100 }, 'bad theme kept, fade clamped');
+  res = await settingsReq('PUT', { theme: 'Bad Theme!', unfocusedFade: 500, minCols: 5 });
+  assert.deepStrictEqual(await res.json(), { theme: 'light', unfocusedFade: 100, minCols: 40 }, 'bad theme kept, fade and width clamped');
   res = await appScheme(new Request('webmux://host-abcd1234/settings.json', { method: 'PUT', body: '{nope' }));
   assert.strictEqual(res.status, 400, 'malformed body rejected');
   res = await settingsReq('POST', {});
   assert.strictEqual(res.status, 405, 'only GET/PUT');
-  res = await settingsReq('PUT', { theme: 'dark', unfocusedFade: 40 });
-  assert.deepStrictEqual(readStore().settings, { theme: 'dark', unfocusedFade: 40 });
+  res = await settingsReq('PUT', { theme: 'dark', unfocusedFade: 40, minCols: 90 });
+  assert.deepStrictEqual(readStore().settings, { theme: 'dark', unfocusedFade: 40, minCols: 90 });
   res = await appScheme(new Request('webmux://host-abcd1234/nope.js'));
   assert.strictEqual(res.status, 404, 'unknown paths still 404');
   console.log('settings ok');
@@ -329,8 +329,8 @@ const connState = async (name) =>
   assert.ok(r.ok);
   snap = await handlers['conns:get']();
   assert.strictEqual(snap.connections.length, 2, 'two connections coexist');
-  assert.strictEqual(FakeBaseWindow.last.title, 'webmux — 2 hosts · 0 tabs',
-    'window title summarizes hosts and tabs');
+  assert.strictEqual(FakeBaseWindow.last.title, 'webmux — 2 hosts · 0 panes',
+    'window title summarizes hosts and panes');
   r = await handlers['conns:cmd'](null, 'new-terminal');
   assert.ok(r.error, 'chrome cmd without a live active page errors');
   assert.strictEqual((await connState('bad')).state, 'failed', 'first connection untouched by second');

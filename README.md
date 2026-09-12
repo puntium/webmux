@@ -47,9 +47,9 @@ remote host: ~/.webmux/dist     ▼
   connected profile, hosts the header strip and the connection manager
   (client-owned pages — a remote server never learns about other hosts),
   and serves the frontend on the `webmux://` scheme. `ui/app.js` is the
-  frontend: a tmux-style split layout (binary tree of panes with
-  drag-resizable dividers), tabbed panes, one xterm.js per terminal tab on
-  its own WebSocket. The fit addon reports pane sizes back; the server
+  frontend: a scrolling column layout in the style of niri / PaperWM (a
+  horizontal strip of columns, each a stack of panes, keyboard-driven), one
+  xterm.js per terminal pane on its own WebSocket. The fit addon reports pane sizes back; the server
   resizes both the PTY and the headless mirror. The layout tree lives in
   localStorage keyed by the `webmux://<host-slug>` origin, so each client
   keeps its own arrangement per host, matching its own screen.
@@ -148,19 +148,40 @@ On a deployed host these run under the pushed node:
 
 ## Using the layout
 
-- **+ New terminal** / **+ Files** in the header open a tab in the focused
-  pane (`POST /api/sessions` for terminals); **+** on a pane's tab bar does
-  the same for that pane.
-- **↔ / ↕** on a pane split it side-by-side / stacked with a new terminal.
-  Shift-click moves the pane's current tab into the new split instead.
-- Drag tabs between panes or reorder them within one; drag the divider
-  between panes to resize. Dropping never creates a split.
-- **✕** on a tab closes it — for terminals that kills the session
-  (`DELETE /api/sessions/:id`); a shell exiting closes its tab on its own.
+The workspace is a horizontal strip of **columns**, each a vertical stack of
+one or more **panes** (a terminal or a file browser), like niri or PaperWM.
+Columns are at least *Minimum terminal width* characters wide (a setting,
+default 90) and never narrower than half the window: while they all fit
+they share the window equally; open more and the strip scrolls sideways,
+following the focused pane. The focused pane
+wears an accent border; its title bar spans the pane's width.
+
+| Keys | Action |
+| --- | --- |
+| ⌘↩ / ⌘⇧↩ | new terminal / new file browser, as a new column right of the focused one (`POST /api/sessions` for terminals) |
+| ⌥⌘↩ | new terminal stacked directly below the focused pane |
+| ⌘W | close the focused pane (kills a terminal's session, no confirmation) |
+| ⌘F | toggle the focused pane to the whole window; a stacked pane first splits out into its own column |
+| ⌘← → ↑ ↓ or ⌘h j k l | move focus between columns / within a stack (each column remembers its active pane) |
+| ⇧⌘← → | move the whole column left / right |
+| ⇧⌘↑ ↓ or ⌥⌘↑ ↓ | move the pane up / down within its stack |
+| ⌥⌘← → | a pane alone in its column merges into the neighbouring column on that side; a pane sharing a column splits out into its own column on that side |
+
+The same commands sit in the client's **Pane** menu. In the client, ⌘H /
+⌥⌘H (Hide) and ⌘⇧L (Connection Log, now ⌃⌘L) gave up their shortcuts to
+make room for the vim keys. Other pointers:
+
+- **+ New terminal** / **+ Files** in the header do what ⌘↩ / ⌘⇧↩ do.
+- Drag the divider between stacked panes to resize them; widths follow the
+  column rule. Two-finger horizontal scrolling pans the strip.
+- **✕** in a pane's title bar closes it — for terminals that kills the
+  session (`DELETE /api/sessions/:id`); a shell exiting closes its pane on
+  its own. Focus moves to the next pane in the stack, else to a neighbour.
 - ⌘R reloads the page: live sessions reattach with state and layout intact.
+  Sessions opened elsewhere (another client) appear as columns on the right.
 - **⚙** in the header (⌘, in the client) opens the settings panel: the color
-  scheme (*Dark mode default* or *Light mode*) and how much unfocused panes
-  fade. These are client-wide — the client keeps them in its `config.json`
+  scheme (*Dark mode default* or *Light mode*), how much unfocused panes
+  fade, and the minimum terminal width. These are client-wide — the client keeps them in its `config.json`
   and every connected host page follows a change at once (the page reads and
   writes them at `/settings.json` on its own `webmux://` origin; served
   directly by the server instead, they fall back to localStorage).
@@ -184,7 +205,7 @@ On a deployed host these run under the pushed node:
 ## File browser
 
 Panes aren't limited to terminals: **+ Files** opens a Finder-style
-Miller-columns file browser tab (one column per directory level, rooted at
+Miller-columns file browser pane (one column per directory level, rooted at
 `/`, starting in `$HOME`). Click to drill down, or navigate with the arrow
 keys / `hjkl` like yazi. Selecting a file shows a preview column — text
 (first 64 KB), images, or size/mtime for binaries — via `GET /api/fs/list`,
@@ -203,10 +224,10 @@ directory shown (`POST /api/fs/upload`, colliding names deduped
 Finder-style). The selected entry can be renamed (`r`/`F2`, inline,
 `POST /api/fs/rename`) or deleted (`d`/`Delete`, after a confirmation —
 directories recursively; `POST /api/fs/delete`), via keyboard or the ✎/✕
-buttons on the row. Browser tabs are client-side widgets (no server
+buttons on the row. Browser panes are client-side widgets (no server
 session) implemented in `electron/ui/files-widget.js`; their path and
-cursor persist in localStorage alongside the layout, and they drag between
-panes like any other tab.
+cursor persist in localStorage alongside the layout, and they move around
+the strip like any other pane.
 
 ## Protocol
 
@@ -218,9 +239,9 @@ same frames over its unix socket, and server.js forwards them verbatim.
 | server → client | `snapshot` | serialized buffer + cols/rows + title + shell pid (sent on attach) |
 | server → client | `output` | raw PTY output |
 | server → client | `title` | this session's terminal title changed (OSC 0/2) |
-| server → client | `session-title` | any session's title changed — fanned out on every open socket so background tabs stay current |
+| server → client | `session-title` | any session's title changed — fanned out on every open socket so every pane stays current |
 | server → client | `exit` | shell exit code |
-| server → client | `error` | session doesn't exist (the tab is dropped) |
+| server → client | `error` | session doesn't exist (the pane is dropped) |
 | server → client | `paste-result` | how a pasted image was delivered (`claude` or `path`) |
 | server → client | `open-url` | a program in the session asked for a browser (see shims) |
 | client → server | `input` | keystrokes |
@@ -228,7 +249,7 @@ same frames over its unix socket, and server.js forwards them verbatim.
 | client → server | `paste-image` | base64 image for the clipboard slot |
 | client → server | `clipboard-sync` | base64 image copied on the client, mirrored into the slot |
 
-Tabs are labeled with the terminal title when the running program sets one
+Panes are titled with the terminal title when the running program sets one
 (OSC 0/2, e.g. shell prompts or vim), tracked in the pty host so titles
 survive reattach. Programs copying via OSC 52 write through to the client's
 clipboard (see below); clipboard *reads* via OSC 52 are ignored.

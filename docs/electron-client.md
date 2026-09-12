@@ -151,7 +151,7 @@ A self-contained npm package so the server install never pulls Electron.
     the remote starter restarts a dead server. A fresh tunnel that never
     reaches the server within 20s is killed the same way. Independently,
     the page marks its title `· offline` while any session socket is down
-    and retrying; main parses that (it already harvests the tab count from
+    and retrying; main parses that (it already harvests the pane count from
     the title, and remote pages have no IPC bridge) into a `degraded` pill
     state — amber — so the chrome never shows green over a terminal saying
     "disconnected".

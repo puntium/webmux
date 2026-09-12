@@ -136,8 +136,8 @@
 </head>
 <body>
 <div id="actions">
-  <button id="newTermBtn" title="New terminal tab in the focused pane" disabled>+ New terminal</button>
-  <button id="newFilesBtn" title="New file-browser tab in the focused pane" disabled>+ Files</button>
+  <button id="newTermBtn" title="New terminal in a new column (⌘↩)" disabled>+ New terminal</button>
+  <button id="newFilesBtn" title="New file browser in a new column (⌘⇧↩)" disabled>+ Files</button>
 </div>
 <div id="pills"></div>
 <div id="right">
@@ -168,7 +168,7 @@
         <button class="x" title="Disconnect" data-x="${esc(c.name)}">✕</button>
       </span>`).join('');
     document.getElementById('connectionsBtn').classList.toggle('active', snap.active === null);
-    // The tab actions (and the page-drawn settings panel) target the visible
+    // The pane actions (and the page-drawn settings panel) target the visible
     // host page; on the connection page there is nothing to act on.
     for (const btn of document.querySelectorAll('#actions button, #settingsBtn')) {
       btn.disabled = snap.active === null;

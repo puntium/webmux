@@ -53,15 +53,14 @@
       --accent-fg: #10101a;          /* text on an accent-filled button */
       --accent-yellow: #e0af68;
       --danger: #f7768e;
-      --focus-border: #4a4a68;       /* focused pane outline */
       --raise: rgba(255, 255, 255, 0.03);        /* pane bar */
-      --raise-strong: rgba(255, 255, 255, 0.1);  /* focused pane bar, on-path rows */
+      --raise-strong: rgba(255, 255, 255, 0.1);  /* on-path rows, inline code */
       --hover: rgba(255, 255, 255, 0.05);
-      --accent-tint: rgba(122, 162, 247, 0.15);       /* active tab */
+      --accent-tint: rgba(122, 162, 247, 0.15);       /* toggles, pressed state */
       --accent-tint-faint: rgba(122, 162, 247, 0.07); /* drop target wash */
       --selection-bg: rgba(122, 162, 247, 0.3);       /* file-browser cursor row */
       --selection-fg: #fff;
-      --yellow-tint: rgba(224, 175, 104, 0.22);       /* active tab in the focused pane */
+      --yellow-tint: rgba(224, 175, 104, 0.22);       /* focused pane's title bar */
       --input-bg: rgba(0, 0, 0, 0.4);
       --overlay: rgba(0, 0, 0, 0.55);
       --shadow: rgba(0, 0, 0, 0.6);
@@ -81,7 +80,6 @@
       --accent-fg: #ffffff;
       --accent-yellow: #8c6c3e;
       --danger: #c8283f;
-      --focus-border: #9ca2bd;
       --raise: rgba(0, 0, 0, 0.03);
       --raise-strong: rgba(0, 0, 0, 0.07);
       --hover: rgba(0, 0, 0, 0.05);
@@ -177,31 +175,45 @@
       z-index: 200;
     }
     #toast.show { opacity: 1; transform: translateY(0); }
+    /* The scrolling strip of columns (app.js). Columns are flex items with
+       a basis of --col-min (the minimum-width setting in pixels, set by
+       app.js) and no shrink: while they all fit they grow to share the
+       width, past that the strip overflows into a horizontal scroll. The
+       min(…, 100%) keeps a column no wider than a window that is itself
+       narrower than the minimum. position: relative makes column
+       offsetLeft strip-relative for the scroll-into-view math. */
     #layout {
+      position: relative;
       flex: 1;
       display: flex;
+      gap: 6px;
       padding: 6px;
       min-height: 0;
       min-width: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      overscroll-behavior-x: contain;
     }
-    #layout > * { flex: 1 1 0; }
-    .split {
+    .column {
+      flex: 1 0 min(var(--col-min, 600px), 100%);
       display: flex;
+      flex-direction: column;
       min-width: 0;
       min-height: 0;
     }
-    .split.row { flex-direction: row; }
-    .split.col { flex-direction: column; }
+    .column.full { flex-basis: 100%; } /* ⌘F: the whole window */
+    /* Divider between stacked panes: drag to reassign heights. */
     .divider {
       flex: none;
+      height: 6px;
+      margin: 1px 0;
+      cursor: row-resize;
       background: var(--border);
       border-radius: 3px;
       transition: background 0.15s;
       touch-action: none;
     }
     .divider:hover, .divider:active { background: var(--accent); }
-    .divider.row { width: 6px; cursor: col-resize; margin: 0 1px; }
-    .divider.col { height: 6px; cursor: row-resize; margin: 1px 0; }
     .pane {
       display: flex;
       flex-direction: column;
@@ -212,8 +224,12 @@
       min-width: 0;
       min-height: 0;
     }
-    .pane.drop-target { border-color: var(--accent); }
-    .pane.focused { border-color: var(--focus-border); }
+    /* The focused pane wears a 2px accent ring: its own border plus a
+       1px outer shadow, which the 6px gaps leave room for. */
+    .pane.focused {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
     .pane-bar {
       display: flex;
       align-items: center;
@@ -225,68 +241,37 @@
       flex: none;
       min-width: 0;
     }
-    .pane.focused .pane-bar { background: var(--raise-strong); }
-    .tabs {
-      display: flex;
-      gap: 2px;
-      overflow-x: auto;
-      min-width: 0;
-      scrollbar-width: none;
-    }
-    .tab {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      min-width: 120px;
-      max-width: 400px;
-      padding: 2px 4px 2px 9px;
-      border-radius: 5px;
-      cursor: pointer;
-      user-select: none;
-      white-space: nowrap;
-      opacity: 0.55;
-    }
-    .tab-icon {
-      flex: none;
-      display: inline-flex;
-      opacity: 0.55;
-    }
-    .tab-label {
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .tab:hover { opacity: 0.9; background: var(--hover); }
-    .tab.active { opacity: 1; background: var(--accent-tint); color: var(--accent); }
-    .pane.focused .tab.active {
+    .pane.focused .pane-bar {
       background: var(--yellow-tint);
       color: var(--accent-yellow);
       font-weight: 600;
     }
-    .tab.dragging { opacity: 0.3; }
-    .tab.drop-before { box-shadow: -2px 0 0 0 var(--accent); }
-    .tab.drop-after { box-shadow: 2px 0 0 0 var(--accent); }
-    .tab-close {
+    .pane-icon {
+      flex: none;
+      display: inline-flex;
+      opacity: 0.55;
+      padding-left: 4px;
+    }
+    .pane-label {
+      flex: 1;
+      min-width: 0;
+      padding: 2px 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .pane-close {
+      flex: none;
       background: none;
       border: none;
       color: inherit;
       cursor: pointer;
       font-size: 10px;
       opacity: 0.5;
-      padding: 0 3px;
-    }
-    .tab-close:hover { opacity: 1; color: var(--danger); }
-    .new-tab, .pane-actions button {
-      background: none;
-      border: none;
-      color: var(--text);
-      cursor: pointer;
-      font-size: 13px;
-      opacity: 0.6;
       padding: 0 4px;
     }
-    .new-tab:hover, .pane-actions button:hover { opacity: 1; color: var(--accent); }
-    .pane-actions { display: flex; gap: 2px; flex: none; margin-left: auto; }
+    .pane-close:hover { opacity: 1; color: var(--danger); }
     .pane-body {
       position: relative; /* anchors the fade overlay below */
       flex: 1;
@@ -631,6 +616,18 @@
     }
     .setting select:focus { outline: none; border-color: var(--accent); }
     .setting input[type="range"] { width: 170px; accent-color: var(--accent); cursor: pointer; }
+    .setting input[type="number"] {
+      font: inherit;
+      font-size: 13px;
+      width: 6ch;
+      color: var(--text);
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 8px;
+    }
+    .setting input[type="number"]:focus { outline: none; border-color: var(--accent); }
+    .setting .setting-unit { font-size: 12px; opacity: 0.7; }
     .setting output {
       min-width: 4ch;
       text-align: right;

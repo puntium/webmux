@@ -1,18 +1,23 @@
-/* webmux client — tmux-style split layout with tabbed panes.
-   Layout is a binary tree: internal nodes are splits with a direction and
-   ratio (resizable by dragging the divider); leaves are panes, each holding a
-   tabbed set of sessions with one active tab. Tabs can be dragged between
-   panes (and reordered within one), but dropping never creates a new split —
-   splits happen only via the explicit ↔ / ↕ buttons. Sessions live on the
-   server; the tree is saved to localStorage — per origin, so per host and
-   per client — and a reload restores both the sessions (from headless
-   snapshots) and the arrangement.
+/* webmux client — scrolling column layout (niri / PaperWM style).
+   The workspace is a horizontal strip of columns; each column is a vertical
+   stack of panes, each pane one tile. Columns are at least a configurable
+   number of terminal cells wide (settings: minCols) and at least half the
+   window: while every column fits they share the viewport equally, past
+   that each stays at the minimum and the strip scrolls sideways, following
+   the focused pane. Heights
+   within a column are drag-resizable; widths follow the rule. Everything is
+   keyboard-driven (⌘↩ new terminal, ⌥⌘↩ terminal below, ⌘⇧↩ new file browser, ⌘W close, ⌘F
+   full-window toggle, ⌘+arrows/hjkl to focus, ⇧⌘ to move a column or a
+   pane within its stack, ⌥⌘ to merge a lone pane into the neighbouring
+   column or split a stacked one out — see paneCommandForKey). Sessions live on the server; the layout is saved to
+   localStorage — per origin, so per host and per client — and a reload
+   restores both the sessions (from headless snapshots) and the arrangement.
 
-   Tabs hold either a terminal session (id from the server) or a client-side
-   widget (id `files-<random>`, the Miller-columns file browser implemented
-   in files-widget.js). Both kinds are represented by a "tile" with the same
-   interface: { root, openIfNeeded(), fitAndReport(), focus(), term?, ws?,
-   label?() }. */
+   Panes hold either a terminal session (id from the server) or a
+   client-side widget (id `files-<random>`, the Miller-columns file browser
+   implemented in files-widget.js). Both kinds are represented by a "tile"
+   with the same interface: { root, openIfNeeded(), fitAndReport(), focus(),
+   term?, ws?, label?() }. */
 
 import {
   isFilesId, createFilesWidget, makeFilesTile, discardWidgetState, pruneWidgetStates,
@@ -26,73 +31,60 @@ import { logDebug, logInfo, logWarn, logError, openLogWindow } from './log.js';
 const layoutEl = document.getElementById('layout');
 const tiles = new Map(); // sessionId -> tile
 const MIN_PANE_PX = 110;
+const TERM_FONT = '"JetBrainsMono Nerd Font", monospace';
 
-// tree: { type:'pane', tabs:[id], active:id } | { type:'split', dir:'row'|'col', ratio, a, b }
-let tree = null;
-let focusedPane = null; // pane node that last had user interaction
-let dragSessionId = null; // session id of the tab being dragged, if any
+// layout: columns[] of { panes:[id], sizes:[weight], active:id, full? }.
+// sizes are flex weights for the stack (parallel to panes); active is the
+// pane that takes focus when the column is entered from the side; full
+// marks a column that spans the whole window (⌘F) instead of the width rule.
+let columns = [];
+let focusedId = null; // pane (tile id) that last had user interaction
 
 // ---------------------------------------------------------------------------
-// Layout tree helpers
+// Layout helpers
 // ---------------------------------------------------------------------------
 
-const paneNode = (id) => ({ type: 'pane', tabs: [id], active: id });
+const newColumn = (id) => ({ panes: [id], sizes: [1], active: id });
 
-function treeContains(node, target) {
-  if (!node || !target) return false;
-  if (node === target) return true;
-  return node.type === 'split' && (treeContains(node.a, target) || treeContains(node.b, target));
+const allIds = () => columns.flatMap((c) => c.panes);
+const columnIndexOf = (id) => columns.findIndex((c) => c.panes.includes(id));
+const columnOf = (id) => columns[columnIndexOf(id)] || null;
+
+// The new pane gets the column's average weight, i.e. an equal share of a
+// column that was evenly split and a middling one of a resized one.
+function insertIntoColumn(col, id, index = col.panes.length) {
+  const avg = col.sizes.length ? col.sizes.reduce((s, w) => s + w, 0) / col.sizes.length : 1;
+  col.panes.splice(index, 0, id);
+  col.sizes.splice(index, 0, avg);
+  col.active = id;
 }
 
-function findPane(node, sessionId) {
-  if (!node) return null;
-  if (node.type === 'pane') return node.tabs.includes(sessionId) ? node : null;
-  return findPane(node.a, sessionId) || findPane(node.b, sessionId);
+// Removes the pane; an emptied column disappears with it.
+function removeFromColumn(id) {
+  const ci = columnIndexOf(id);
+  if (ci === -1) return;
+  const col = columns[ci];
+  const i = col.panes.indexOf(id);
+  col.panes.splice(i, 1);
+  col.sizes.splice(i, 1);
+  if (!col.panes.length) columns.splice(ci, 1);
+  else if (col.active === id) col.active = col.panes[Math.min(i, col.panes.length - 1)];
 }
 
-function firstPane(node) {
-  if (!node) return null;
-  return node.type === 'pane' ? node : firstPane(node.a) || firstPane(node.b);
+// The pane that should take focus once `id` goes away: the next one down
+// its stack, else the one above, else the neighbouring column's active pane.
+function focusAfterRemoval(id) {
+  const ci = columnIndexOf(id);
+  if (ci === -1) return null;
+  const col = columns[ci];
+  const i = col.panes.indexOf(id);
+  return col.panes[i + 1] ?? col.panes[i - 1]
+    ?? columns[ci + 1]?.active ?? columns[ci - 1]?.active ?? null;
 }
 
-function replaceNode(node, target, replacement) {
-  if (!node) return node;
-  if (node === target) return replacement;
-  if (node.type === 'split') {
-    node.a = replaceNode(node.a, target, replacement);
-    node.b = replaceNode(node.b, target, replacement);
-  }
-  return node;
-}
-
-function pruneEmpty(node) {
-  if (!node) return null;
-  if (node.type === 'pane') return node.tabs.length ? node : null;
-  const a = pruneEmpty(node.a);
-  const b = pruneEmpty(node.b);
-  if (!a) return b; // sibling takes the whole area
-  if (!b) return a;
-  node.a = a;
-  node.b = b;
-  return node;
-}
-
-function collectIds(node, out = []) {
-  if (!node) return out;
-  if (node.type === 'pane') out.push(...node.tabs);
-  else { collectIds(node.a, out); collectIds(node.b, out); }
-  return out;
-}
-
-function removeSessionFromTree(sessionId) {
-  const pane = findPane(tree, sessionId);
-  if (!pane) return;
-  const i = pane.tabs.indexOf(sessionId);
-  pane.tabs.splice(i, 1);
-  if (pane.active === sessionId) {
-    pane.active = pane.tabs[Math.min(i, pane.tabs.length - 1)] ?? null;
-  }
-  tree = pruneEmpty(tree);
+function removeSessionFromLayout(id) {
+  if (focusedId === id) focusedId = focusAfterRemoval(id);
+  removeFromColumn(id);
 }
 
 // The layout stays in localStorage, i.e. per client *and* per host: storage
@@ -100,53 +92,98 @@ function removeSessionFromTree(sessionId) {
 // webmux://<host-slug> origin derived from the profile's host+instance, so
 // different clients keep the layouts that fit their own screens.
 function saveLayout() {
-  localStorage.setItem('webmux-layout', JSON.stringify(tree));
+  localStorage.setItem('webmux-layout', JSON.stringify({ columns, focused: focusedId }));
 }
 
-// Accepts the pre-tabs format ({ type:'pane', session }) and upgrades it.
-function migrate(node) {
-  if (!node || !node.type) return null;
+// Accepts the split-tree formats that preceded columns and converts them:
+// side-by-side splits become adjacent columns, a stacked split of two
+// single columns becomes one stack (heights from the split ratio), and a
+// pane's tabs each become a pane of their own.
+function columnsFromTree(node) {
+  if (!node || !node.type) return [];
   if (node.type === 'pane') {
-    if (node.session != null) return paneNode(node.session);
-    if (!Array.isArray(node.tabs) || node.tabs.length === 0) return null;
-    if (!node.tabs.includes(node.active)) node.active = node.tabs[0];
-    return node;
+    const ids = node.session != null ? [node.session] : (Array.isArray(node.tabs) ? node.tabs : []);
+    if (!ids.length) return [];
+    return [{ panes: [...ids], sizes: ids.map(() => 1), active: ids.includes(node.active) ? node.active : ids[0] }];
   }
-  node.a = migrate(node.a);
-  node.b = migrate(node.b);
-  if (!node.a) return node.b;
-  if (!node.b) return node.a;
-  return node;
+  const a = columnsFromTree(node.a);
+  const b = columnsFromTree(node.b);
+  if (node.dir === 'col' && a.length === 1 && b.length === 1) {
+    const ratio = Number(node.ratio) > 0 && Number(node.ratio) < 1 ? Number(node.ratio) : 0.5;
+    const scale = (sizes, share) => {
+      const sum = sizes.reduce((s, w) => s + w, 0) || 1;
+      return sizes.map((w) => (w / sum) * share);
+    };
+    return [{
+      panes: [...a[0].panes, ...b[0].panes],
+      sizes: [...scale(a[0].sizes, ratio), ...scale(b[0].sizes, 1 - ratio)],
+      active: a[0].active,
+    }];
+  }
+  return [...a, ...b];
 }
 
+// Anything from storage is untrusted-ish: drop malformed columns and
+// duplicate ids, normalise weights, and make sure `active` points at a pane.
+function sanitizeColumns(raw) {
+  const seen = new Set();
+  const out = [];
+  for (const col of Array.isArray(raw) ? raw : []) {
+    if (!col || !Array.isArray(col.panes)) continue;
+    const panes = [];
+    const sizes = [];
+    col.panes.forEach((id, i) => {
+      if ((typeof id !== 'string' && typeof id !== 'number') || seen.has(id)) return;
+      seen.add(id);
+      panes.push(id);
+      const w = Number(Array.isArray(col.sizes) ? col.sizes[i] : 1);
+      sizes.push(Number.isFinite(w) && w > 0 ? w : 1);
+    });
+    if (!panes.length) continue;
+    out.push({ panes, sizes, active: panes.includes(col.active) ? col.active : panes[0], full: col.full === true });
+  }
+  return out;
+}
+
+// Returns { columns, focused }; focused may name a pane that no longer exists.
 function loadLayout() {
-  try { return migrate(JSON.parse(localStorage.getItem('webmux-layout'))); }
-  catch { return null; }
+  try {
+    const raw = JSON.parse(localStorage.getItem('webmux-layout'));
+    if (raw && Array.isArray(raw.columns)) return { columns: sanitizeColumns(raw.columns), focused: raw.focused ?? null };
+    return { columns: sanitizeColumns(columnsFromTree(raw)), focused: null }; // pre-columns split tree
+  } catch { return { columns: [], focused: null }; }
 }
 
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
+// Structural render: rebuilds the strip. Focus changes alone don't come
+// through here (setFocus just retargets classes), so the terminals aren't
+// re-attached — and re-fitted — for every ⌘←.
 function render() {
-  if (tree && !treeContains(tree, focusedPane)) focusedPane = firstPane(tree);
+  if (!allIds().includes(focusedId)) focusedId = columns[0]?.active ?? null;
+  const scrollLeft = layoutEl.scrollLeft; // replaceChildren would reset it
   layoutEl.replaceChildren();
-  if (tree) layoutEl.appendChild(buildNode(tree));
+  for (const col of columns) layoutEl.appendChild(buildColumn(col));
+  layoutEl.scrollLeft = scrollLeft;
   // xterm needs its element in the DOM before open(); open any new tiles now.
   for (const tile of tiles.values()) tile.openIfNeeded();
+  applyColumnWidths();
   fitAll();
   updateTitle();
+  revealFocused();
 }
 
 // The title is this page's one channel to the Electron client (main.js
-// page-title-updated): the tab count, which it totals across hosts in the
+// page-title-updated): the pane count, which it totals across hosts in the
 // window title, and an offline marker while any session socket is down and
 // retrying — its pill would otherwise stay green over a terminal saying
 // "disconnected", because the ssh tunnel it supervises can outlive the
 // server behind it.
 let linkDown = false;
 function updateTitle() {
-  document.title = `webmux — ${tiles.size} tab${tiles.size === 1 ? '' : 's'}${linkDown ? ' · offline' : ''}`;
+  document.title = `webmux — ${tiles.size} pane${tiles.size === 1 ? '' : 's'}${linkDown ? ' · offline' : ''}`;
 }
 function setLinkDown(down) {
   if (linkDown === down) return;
@@ -156,87 +193,26 @@ function setLinkDown(down) {
   updateTitle();
 }
 
-function buildNode(node) {
-  if (node.type === 'pane') {
-    const el = buildPane(node);
-    el.style.flex = '1 1 0';
-    return el;
-  }
+function buildColumn(col) {
   const el = document.createElement('div');
-  el.className = `split ${node.dir}`;
-  const a = buildNode(node.a);
-  const b = buildNode(node.b);
-  a.style.flex = `${node.ratio} 1 0`;
-  b.style.flex = `${1 - node.ratio} 1 0`;
-  el.append(a, makeDivider(node, a, b), b);
+  el.className = 'column' + (col.full ? ' full' : '');
+  col.panes.forEach((id, i) => {
+    if (i) el.appendChild(makeDivider(col, i - 1));
+    el.appendChild(buildPane(id, paneFlex(col, i)));
+  });
   return el;
 }
 
-function buildPane(node) {
-  const el = document.createElement('div');
-  el.className = 'pane';
-
-  const bar = document.createElement('div');
-  bar.className = 'pane-bar';
-
-  const tabsEl = document.createElement('div');
-  tabsEl.className = 'tabs';
-  for (const id of node.tabs) tabsEl.appendChild(buildTab(node, id));
-
-  const newTab = document.createElement('button');
-  newTab.className = 'new-tab';
-  newTab.title = 'New terminal tab';
-  newTab.textContent = '+';
-  newTab.addEventListener('click', () => newTabInPane(node));
-
-  const actions = document.createElement('span');
-  actions.className = 'pane-actions';
-  actions.innerHTML = `
-    <button class="split-h" title="Split side by side (shift: move current tab)">↔</button>
-    <button class="split-v" title="Split stacked (shift: move current tab)">↕</button>`;
-  actions.querySelector('.split-h').addEventListener('click', (ev) => splitPane(node, 'row', ev.shiftKey));
-  actions.querySelector('.split-v').addEventListener('click', (ev) => splitPane(node, 'col', ev.shiftKey));
-
-  bar.append(tabsEl, newTab, actions);
-
-  const body = document.createElement('div');
-  body.className = 'pane-body';
-  const active = tiles.get(node.active);
-  if (active) body.appendChild(active.root);
-
-  el.append(bar, body);
-  el.classList.toggle('focused', node === focusedPane);
-  el.addEventListener('pointerdown', () => {
-    if (focusedPane === node) return;
-    focusedPane = node;
-    document.querySelectorAll('.pane.focused').forEach((p) => p.classList.remove('focused'));
-    el.classList.add('focused');
-  }, true);
-
-  // A dragged tab can be dropped anywhere on this pane; unless it lands on a
-  // specific tab (handled in buildTab), it is appended at the end. Panes are
-  // the only drop targets — dropping never creates a new split.
-  el.addEventListener('dragover', (ev) => {
-    if (dragSessionId == null) return;
-    ev.preventDefault();
-    ev.dataTransfer.dropEffect = 'move';
-    el.classList.add('drop-target');
-  });
-  el.addEventListener('dragleave', (ev) => {
-    if (!el.contains(ev.relatedTarget)) el.classList.remove('drop-target');
-  });
-  el.addEventListener('drop', (ev) => {
-    if (dragSessionId == null) return;
-    ev.preventDefault();
-    el.classList.remove('drop-target');
-    moveTab(dragSessionId, node, node.tabs.length);
-  });
-
-  return el;
+// Stack weights as a flex shorthand, normalised to sum to 1: flex-grow
+// totals below 1 leave part of the container unfilled, so a lone survivor
+// of a resized stack (weight 0.3) would otherwise sit in 30% of its column.
+function paneFlex(col, i) {
+  const sum = col.sizes.reduce((s, w) => s + w, 0) || 1;
+  return `${col.sizes[i] / sum} 1 0`;
 }
 
-// Subtle monochrome tab-type markers (stroke follows the tab's text color).
-const TAB_ICON_SVG = {
+// Subtle monochrome pane-type markers (stroke follows the title's text color).
+const PANE_ICON_SVG = {
   term: `<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"
     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
     ><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
@@ -245,109 +221,180 @@ const TAB_ICON_SVG = {
     ><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
 };
 
-function buildTab(node, id) {
-  const tab = document.createElement('div');
-  tab.className = 'tab' + (id === node.active ? ' active' : '');
-  tab.draggable = true;
-  tab.title = isFilesId(id) ? 'file browser' : `session ${id}`;
+function buildPane(id, flex) {
+  const el = document.createElement('div');
+  el.className = 'pane';
+  el.dataset.id = id;
+  el.style.flex = flex;
+
+  const bar = document.createElement('div');
+  bar.className = 'pane-bar';
+  bar.title = isFilesId(id) ? 'file browser' : `session ${id}`;
 
   const tile = tiles.get(id);
   const icon = document.createElement('span');
-  icon.className = 'tab-icon';
-  icon.innerHTML = TAB_ICON_SVG[isFilesId(id) ? 'files' : 'term'];
+  icon.className = 'pane-icon';
+  icon.innerHTML = PANE_ICON_SVG[isFilesId(id) ? 'files' : 'term'];
   const label = document.createElement('span');
-  label.className = 'tab-label';
+  label.className = 'pane-label';
   label.textContent = tile?.label ? tile.label() : id;
-  if (tile) tile.labelEl = label; // files tiles retitle the tab as you navigate
+  if (tile) tile.labelEl = label; // files tiles retitle themselves as you navigate
   const close = document.createElement('button');
-  close.className = 'tab-close';
+  close.className = 'pane-close';
   close.title = isFilesId(id) ? 'Close' : 'Kill session';
   close.textContent = '✕';
-  tab.append(icon, label, close);
-
-  tab.addEventListener('click', () => {
-    if (node.active !== id) {
-      node.active = id;
-      saveLayout();
-      render();
-    }
-    tiles.get(id)?.focus();
-  });
   close.addEventListener('click', (ev) => {
     ev.stopPropagation();
     removeTile(id, true);
   });
+  bar.append(icon, label, close);
+  // Clicking the bar (not ✕) focuses the pane's content, like clicking in it.
+  bar.addEventListener('click', () => tiles.get(id)?.focus());
 
-  tab.addEventListener('dragstart', (ev) => {
-    dragSessionId = id;
-    ev.dataTransfer.setData('text/plain', id);
-    ev.dataTransfer.effectAllowed = 'move';
-    tab.classList.add('dragging');
-  });
-  tab.addEventListener('dragend', () => {
-    dragSessionId = null;
-    tab.classList.remove('dragging');
-    document.querySelectorAll('.drop-target, .drop-before, .drop-after')
-      .forEach((n) => n.classList.remove('drop-target', 'drop-before', 'drop-after'));
-  });
+  const body = document.createElement('div');
+  body.className = 'pane-body';
+  if (tile) body.appendChild(tile.root);
 
-  // Dropping on a tab inserts before or after it depending on which half of
-  // the tab the pointer is over.
-  const dropAfter = (ev) => ev.clientX > tab.getBoundingClientRect().left + tab.offsetWidth / 2;
-  tab.addEventListener('dragover', (ev) => {
-    if (dragSessionId == null) return;
-    ev.preventDefault();
-    const after = dropAfter(ev);
-    tab.classList.toggle('drop-before', !after);
-    tab.classList.toggle('drop-after', after);
-  });
-  tab.addEventListener('dragleave', () => tab.classList.remove('drop-before', 'drop-after'));
-  tab.addEventListener('drop', (ev) => {
-    if (dragSessionId == null) return;
-    ev.preventDefault();
-    ev.stopPropagation(); // the pane's drop handler would append instead
-    tab.classList.remove('drop-before', 'drop-after');
-    moveTab(dragSessionId, node, node.tabs.indexOf(id) + (dropAfter(ev) ? 1 : 0));
-  });
-
-  return tab;
+  el.append(bar, body);
+  el.classList.toggle('focused', id === focusedId);
+  el.addEventListener('pointerdown', () => setFocus(id), true);
+  return el;
 }
 
-function moveTab(sessionId, targetPane, index) {
-  const src = findPane(tree, sessionId);
-  if (!src) return;
-  const from = src.tabs.indexOf(sessionId);
-  src.tabs.splice(from, 1);
-  if (src === targetPane && index > from) index--;
-  if (src !== targetPane && src.active === sessionId) {
-    src.active = src.tabs[Math.min(from, src.tabs.length - 1)] ?? null;
+const paneEl = (id) => layoutEl.querySelector(`.pane[data-id="${CSS.escape(String(id))}"]`);
+
+// Focus bookkeeping: the column remembers it as its active pane (so ⌘←/→
+// return to it), the border moves, and the strip scrolls it into view.
+// focusTile additionally puts keyboard focus in the content — needed for
+// the keyboard paths; a pointerdown focuses the terminal on its own.
+function setFocus(id, { focusTile = false } = {}) {
+  const col = columnOf(id);
+  if (!col) return;
+  if (focusedId !== id || col.active !== id) {
+    focusedId = id;
+    col.active = id;
+    layoutEl.querySelectorAll('.pane.focused').forEach((p) => p.classList.remove('focused'));
+    paneEl(id)?.classList.add('focused');
+    saveLayout();
   }
-  targetPane.tabs.splice(index, 0, sessionId);
-  targetPane.active = sessionId;
-  focusedPane = targetPane;
-  tree = pruneEmpty(tree); // the source pane may now be empty
-  saveLayout();
-  render();
-  tiles.get(sessionId)?.focus();
+  revealFocused();
+  if (focusTile) tiles.get(id)?.focus();
 }
 
-function makeDivider(node, elA, elB) {
+// Scroll the strip the minimum distance that shows the focused column in
+// full (niri's default), never re-centering a column already on screen.
+// Deferred a frame: focusing a pane's content (a terminal's hidden
+// textarea, whether by click or from the keyboard paths) makes the browser
+// scroll the strip instantly to show it, which would fight the animation
+// here — let that land first, then take over.
+let revealQueued = false;
+function revealFocused() {
+  if (revealQueued) return;
+  revealQueued = true;
+  requestAnimationFrame(() => {
+    revealQueued = false;
+    revealFocusedNow();
+  });
+}
+function revealFocusedNow() {
+  const colEl = paneEl(focusedId)?.parentElement;
+  if (!colEl) return;
+  const pad = 6; // #layout padding, so the pane border isn't flush with the edge
+  const left = colEl.offsetLeft - pad;
+  const right = colEl.offsetLeft + colEl.offsetWidth + pad;
+  const view = layoutEl.clientWidth;
+  // Judge visibility against where the strip is heading, not where it is:
+  // a focus change mid-flight must not leave the column visible only until
+  // the previous animation finishes pushing it away.
+  let target = chase ? chase.target : layoutEl.scrollLeft;
+  if (left < target) target = left;
+  else if (right > target + view) target = right - view;
+  scrollStripTo(target);
+}
+
+// Strip animation: chase the target with an exponential approach (the
+// step each frame is a fixed fraction of the remaining distance, so it is
+// fast when far and settles gently), tracking our own fractional position
+// because scrollLeft rounds. A new target mid-flight just redirects the
+// chase from wherever it is — no restart, no snap. A wheel pan cancels it.
+const SCROLL_TAU_MS = 60; // time constant; ~95% of the way in 3τ
+let chase = null; // { target, pos, last } while animating
+function scrollStripTo(target) {
+  target = Math.max(0, Math.min(Math.round(target), layoutEl.scrollWidth - layoutEl.clientWidth));
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    chase = null;
+    layoutEl.scrollLeft = target;
+    return;
+  }
+  if (chase) { chase.target = target; return; }
+  if (target === layoutEl.scrollLeft) return;
+  chase = { target, pos: layoutEl.scrollLeft, last: performance.now() };
+  requestAnimationFrame(chaseStep);
+}
+function chaseStep(now) {
+  if (!chase) return;
+  const dt = Math.min(now - chase.last, 100); // a stalled tab doesn't teleport
+  chase.last = now;
+  const diff = chase.target - chase.pos;
+  if (Math.abs(diff) < 0.5) {
+    layoutEl.scrollLeft = chase.target;
+    chase = null;
+    return;
+  }
+  const k = 1 - Math.exp(-dt / SCROLL_TAU_MS);
+  chase.pos += Math.sign(diff) * Math.max(Math.abs(diff) * k, Math.min(1, Math.abs(diff)));
+  layoutEl.scrollLeft = chase.pos;
+  requestAnimationFrame(chaseStep);
+}
+
+// Column width rule: every column is at least minCols terminal cells wide
+// (plus the pane chrome around the grid) and at least half the strip, so
+// two columns at most share the window side by side. With flex-grow the
+// columns share any spare viewport width equally, and with flex-shrink 0
+// they overflow into a horizontal scroll rather than squeezing below the
+// minimum. A window narrower than the cell minimum caps a column at the
+// viewport (the min(…, 100%) in the stylesheet) so it stays entirely
+// visible.
+let cellWidth = 0;
+function measureCell() {
+  const probe = document.createElement('span');
+  probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:13px ${TERM_FONT}`;
+  probe.textContent = 'W'.repeat(100);
+  document.body.appendChild(probe);
+  cellWidth = probe.getBoundingClientRect().width / 100;
+  probe.remove();
+}
+// Pane border (2) + term-holder padding (8) + xterm's viewport scrollbar (10)
+// + a little rounding slack, so minCols cells really fit.
+const PANE_CHROME_PX = 2 + 8 + 10 + 4;
+function applyColumnWidths() {
+  if (!cellWidth) measureCell();
+  const cells = Math.ceil(getSettings().minCols * cellWidth) + PANE_CHROME_PX;
+  const half = Math.floor((layoutEl.clientWidth - 12 - 6) / 2); // minus padding and one gap
+  layoutEl.style.setProperty('--col-min', `${Math.max(cells, half)}px`);
+}
+
+// Divider between panes i and i+1 of a column: dragging reassigns the
+// pair's combined weight.
+function makeDivider(col, i) {
   const div = document.createElement('div');
-  div.className = `divider ${node.dir}`;
+  div.className = 'divider';
   div.addEventListener('pointerdown', (down) => {
     down.preventDefault();
     div.setPointerCapture(down.pointerId);
-    const parent = div.parentElement;
-    const horizontal = node.dir === 'row';
+    const elA = div.previousElementSibling;
+    const elB = div.nextElementSibling;
+    const sum = col.sizes[i] + col.sizes[i + 1];
 
     const onMove = (ev) => {
-      const rect = parent.getBoundingClientRect();
-      const size = horizontal ? rect.width : rect.height;
-      const pos = horizontal ? ev.clientX - rect.left : ev.clientY - rect.top;
+      const top = elA.getBoundingClientRect().top;
+      const size = elB.getBoundingClientRect().bottom - top;
       const min = Math.min(MIN_PANE_PX / size, 0.45);
-      node.ratio = Math.min(1 - min, Math.max(min, pos / size));
-      elA.style.flex = `${node.ratio} 1 0`;
-      elB.style.flex = `${1 - node.ratio} 1 0`;
+      const ratio = Math.min(1 - min, Math.max(min, (ev.clientY - top) / size));
+      col.sizes[i] = sum * ratio;
+      col.sizes[i + 1] = sum * (1 - ratio);
+      elA.style.flex = paneFlex(col, i);
+      elB.style.flex = paneFlex(col, i + 1);
       fitAll();
     };
     const onUp = () => {
@@ -534,6 +581,14 @@ function showSettingsModal() {
         </span>
         <span class="setting-desc">How much panes other than the focused one dim. 0% leaves them untouched.</span>
       </label>
+      <label class="setting">
+        <span class="setting-label">Minimum terminal width</span>
+        <span class="setting-control">
+          <input class="cols-input" type="number" min="40" max="400" step="1" />
+          <span class="setting-unit">columns</span>
+        </span>
+        <span class="setting-desc">Every column is at least this many characters wide, and never narrower than half the window. Columns share the window while they fit; past that the layout scrolls sideways.</span>
+      </label>
       <div class="setting">
         <span class="setting-label">Connection log</span>
         <span class="setting-control"><button type="button" class="log-open">Open log…</button></span>
@@ -552,10 +607,12 @@ function showSettingsModal() {
   }
   const range = overlay.querySelector('.fade-range');
   const value = overlay.querySelector('.fade-value');
+  const cols = overlay.querySelector('.cols-input');
   const sync = (s) => {
     select.value = s.theme;
     range.value = s.unfocusedFade;
     value.textContent = `${s.unfocusedFade}%`;
+    if (document.activeElement !== cols) cols.value = s.minCols;
   };
   sync(getSettings());
   const unsubscribe = onSettingsChange(sync); // a push from another host's page
@@ -565,7 +622,7 @@ function showSettingsModal() {
     overlay.remove();
     settingsOverlay = null;
     document.removeEventListener('keydown', onKey, true);
-    tiles.get(focusedPane?.active)?.focus();
+    tiles.get(focusedId)?.focus();
   };
   const onKey = (ev) => {
     if (ev.key === 'Escape') {
@@ -584,6 +641,10 @@ function showSettingsModal() {
     updateSettings({ unfocusedFade: range.value }, { persist: false });
   });
   range.addEventListener('change', () => updateSettings({ unfocusedFade: range.value }));
+  cols.addEventListener('change', () => {
+    updateSettings({ minCols: cols.value });
+    cols.value = getSettings().minCols; // show the clamped value
+  });
   overlay.querySelector('.settings-close').addEventListener('click', close);
   overlay.querySelector('.log-open').addEventListener('click', async () => {
     if (!(await openLogWindow())) setStatus('the log window is part of the Electron client — see the browser console here');
@@ -913,21 +974,49 @@ function makeTile(sessionId) {
   return tile;
 }
 
+// Closing animation: a pane alone in its column takes the column with it,
+// shrinking to zero width with its left edge fixed (the neighbours slide
+// in from the right); a stacked pane shrinks to zero height from the
+// bottom. The content stays put and is clipped, and nothing is refitted
+// until the structural render afterwards. Resolves when done, or at once
+// under reduced motion; bounded so a detached element can't stall it.
+const CLOSE_MS = 160;
+async function animateRemoval(id) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const pane = paneEl(id);
+  const col = columnOf(id);
+  if (!pane || !col) return;
+  const lone = col.panes.length === 1;
+  const el = lone ? pane.parentElement : pane;
+  const size = lone ? el.getBoundingClientRect().width : el.getBoundingClientRect().height;
+  if (!lone) {
+    const divider = pane.previousElementSibling || pane.nextElementSibling;
+    if (divider?.classList.contains('divider')) divider.style.display = 'none';
+  }
+  Object.assign(el.style, { overflow: 'hidden', flex: 'none', minWidth: '0', minHeight: '0' });
+  const prop = lone ? 'width' : 'height';
+  const anim = el.animate([{ [prop]: `${size}px` }, { [prop]: '0px' }], { duration: CLOSE_MS, easing: 'ease-in', fill: 'forwards' });
+  await Promise.race([anim.finished.catch(() => {}), new Promise((r) => setTimeout(r, CLOSE_MS + 50))]);
+}
+
 async function removeTile(sessionId, killServerSession) {
   const tile = tiles.get(sessionId);
   if (!tile) return;
   tiles.delete(sessionId);
   tile.dead = true; // stop the reconnect loop before closing the socket
   try { tile.ws?.close(); } catch {}
+  const kill = killServerSession && !isFilesId(sessionId)
+    ? fetch(`${API}/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {})
+    : null;
+  await animateRemoval(sessionId); // the terminal keeps painting while it shrinks
   tile.term?.dispose();
   tile.root.remove();
-  if (killServerSession && !isFilesId(sessionId)) {
-    await fetch(`${API}/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {});
-  }
+  await kill;
   discardWidgetState(sessionId);
-  removeSessionFromTree(sessionId);
+  removeSessionFromLayout(sessionId);
   saveLayout();
   render();
+  tiles.get(focusedId)?.focus();
 }
 
 // ---------------------------------------------------------------------------
@@ -944,68 +1033,186 @@ async function createServerSession() {
   return id;
 }
 
-// Shift-clicking a split button moves the pane's current tab into the new
-// split instead of spawning a fresh terminal (only when other tabs remain —
-// a pane can't be left empty).
-async function splitPane(pane, dir, moveActiveTab = false) {
-  let fresh;
-  if (moveActiveTab && pane.tabs.length > 1) {
-    const id = pane.active;
-    const i = pane.tabs.indexOf(id);
-    pane.tabs.splice(i, 1);
-    pane.active = pane.tabs[Math.min(i, pane.tabs.length - 1)];
-    fresh = paneNode(id);
-  } else {
-    const id = await createServerSession();
-    makeTile(id);
-    fresh = paneNode(id);
-  }
-  tree = replaceNode(tree, pane, { type: 'split', dir, ratio: 0.5, a: pane, b: fresh });
-  focusedPane = fresh;
+// A new pane opens as its own column immediately right of the focused one
+// (niri's placement) and takes focus.
+function openInNewColumn(id) {
+  const ci = columnIndexOf(focusedId);
+  columns.splice(ci === -1 ? columns.length : ci + 1, 0, newColumn(id));
+  focusedId = id;
   saveLayout();
   render();
-  tiles.get(fresh.active)?.focus();
+  tiles.get(id)?.focus();
 }
 
-async function newTabInPane(pane) {
-  const id = await createServerSession();
-  makeTile(id);
-  pane.tabs.push(id);
-  pane.active = id;
-  focusedPane = pane;
-  saveLayout();
-  render();
-}
-
-// Header button: open a tab in the focused pane (never a new split).
+// ⌘↩ / header button: new terminal.
 async function newSession() {
-  const pane = treeContains(tree, focusedPane) ? focusedPane : firstPane(tree);
-  if (pane) return newTabInPane(pane);
   const id = await createServerSession();
   makeTile(id);
-  tree = paneNode(id);
-  focusedPane = tree;
-  saveLayout();
-  render();
+  openInNewColumn(id);
 }
 
-// Header button: file browser tab in the focused pane, like newSession.
+// ⌥⌘↩: new terminal stacked directly below the focused pane.
+async function newSessionBelow() {
+  const col = columnOf(focusedId);
+  if (!col) return newSession();
+  const id = await createServerSession();
+  makeTile(id);
+  insertIntoColumn(col, id, col.panes.indexOf(focusedId) + 1);
+  focusedId = id;
+  saveLayout();
+  render();
+  tiles.get(id)?.focus();
+}
+
+// ⌘⇧↩ / header button: file browser.
 function newFilesSession() {
-  const pane = treeContains(tree, focusedPane) ? focusedPane : firstPane(tree);
   const id = createFilesWidget();
   tiles.set(id, makeFilesTile(id));
-  if (pane) {
-    pane.tabs.push(id);
-    pane.active = id;
-    focusedPane = pane;
-  } else {
-    tree = paneNode(id);
-    focusedPane = tree;
-  }
+  openInNewColumn(id);
+}
+
+// ---------------------------------------------------------------------------
+// Pane commands (keyboard, and the client's Pane menu via 'webmux-pane')
+// ---------------------------------------------------------------------------
+
+function focusColumn(dir) {
+  const target = columns[columnIndexOf(focusedId) + dir];
+  if (target) setFocus(target.active, { focusTile: true });
+}
+
+function focusInColumn(dir) {
+  const col = columnOf(focusedId);
+  const target = col?.panes[col.panes.indexOf(focusedId) + dir];
+  if (target != null) setFocus(target, { focusTile: true });
+}
+
+// After a structural move the focused pane keeps focus; re-render and put
+// keyboard focus back in its content.
+function commitMove() {
   saveLayout();
   render();
-  tiles.get(id).focus();
+  tiles.get(focusedId)?.focus();
 }
+
+// ⇧⌘←/→: the whole column swaps places with its neighbour.
+function moveColumn(dir) {
+  const ci = columnIndexOf(focusedId);
+  const ti = ci + dir;
+  if (ci === -1 || ti < 0 || ti >= columns.length) return;
+  [columns[ci], columns[ti]] = [columns[ti], columns[ci]];
+  commitMove();
+}
+
+// ⇧⌘↑/↓ and ⌥⌘↑/↓: the pane swaps places within its stack.
+function movePane(dir) {
+  const col = columnOf(focusedId);
+  if (!col) return;
+  const i = col.panes.indexOf(focusedId);
+  const j = i + dir;
+  if (j < 0 || j >= col.panes.length) return;
+  [col.panes[i], col.panes[j]] = [col.panes[j], col.panes[i]];
+  [col.sizes[i], col.sizes[j]] = [col.sizes[j], col.sizes[i]];
+  commitMove();
+}
+
+// ⌥⌘←/→, niri's consume-or-expel: a pane alone in its column merges into
+// the neighbouring column on that side (at the bottom); a pane sharing a
+// column splits out into a new column of its own on that side.
+function consumeOrExpel(dir) {
+  const ci = columnIndexOf(focusedId);
+  if (ci === -1) return;
+  const col = columns[ci];
+  if (col.panes.length === 1) {
+    const target = columns[ci + dir];
+    if (!target) return;
+    columns.splice(ci, 1);
+    insertIntoColumn(target, focusedId);
+  } else {
+    removeFromColumn(focusedId);
+    columns.splice(dir > 0 ? ci + 1 : ci, 0, newColumn(focusedId));
+  }
+  commitMove();
+}
+
+// ⌘W: close the focused pane — for a terminal that kills its session, no
+// confirmation, same as ✕. Focus falls through as for any removal.
+function closeFocused() {
+  if (focusedId != null) removeTile(focusedId, true);
+}
+
+// ⌘F: toggle the focused pane between the width rule and the whole window.
+// A stacked pane first splits out into a column of its own (right of its
+// stack) and that column goes full; a lone pane just toggles its column.
+function toggleFull() {
+  const ci = columnIndexOf(focusedId);
+  if (ci === -1) return;
+  let col = columns[ci];
+  if (col.panes.length > 1) {
+    removeFromColumn(focusedId);
+    col = newColumn(focusedId);
+    columns.splice(ci + 1, 0, col);
+    col.full = true;
+  } else {
+    col.full = !col.full;
+  }
+  commitMove();
+}
+
+const PANE_COMMANDS = {
+  'new-terminal': newSession,
+  'new-files': newFilesSession,
+  'new-terminal-below': newSessionBelow,
+  'close-pane': closeFocused,
+  'toggle-full': toggleFull,
+  'focus-left': () => focusColumn(-1),
+  'focus-right': () => focusColumn(1),
+  'focus-up': () => focusInColumn(-1),
+  'focus-down': () => focusInColumn(1),
+  'move-column-left': () => moveColumn(-1),
+  'move-column-right': () => moveColumn(1),
+  'move-pane-up': () => movePane(-1),
+  'move-pane-down': () => movePane(1),
+  'consume-expel-left': () => consumeOrExpel(-1),
+  'consume-expel-right': () => consumeOrExpel(1),
+};
+
+// ⌘ bindings. Letters go by ev.code: ⌥ on macOS turns ⌥h into '˙' in
+// ev.key, and shift into 'H'. ⌘H / ⌥⌘H / ⌘⇧L are freed in the client's
+// menu (Hide, Hide Others and the Connection Log lost their accelerators)
+// so they reach the page.
+const DIR_BY_KEY = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+const DIR_BY_CODE = { KeyH: 'left', KeyL: 'right', KeyK: 'up', KeyJ: 'down' };
+function paneCommandForKey(ev) {
+  if (ev.key === 'Enter') {
+    if (ev.altKey) return ev.shiftKey ? null : 'new-terminal-below';
+    return ev.shiftKey ? 'new-files' : 'new-terminal';
+  }
+  if (ev.code === 'KeyW') return ev.altKey || ev.shiftKey ? null : 'close-pane';
+  if (ev.code === 'KeyF') return ev.altKey || ev.shiftKey ? null : 'toggle-full';
+  const dir = DIR_BY_KEY[ev.key] || DIR_BY_CODE[ev.code];
+  if (!dir) return null;
+  const horizontal = dir === 'left' || dir === 'right';
+  if (ev.altKey) return horizontal ? `consume-expel-${dir}` : `move-pane-${dir}`;
+  if (ev.shiftKey) return horizontal ? `move-column-${dir}` : `move-pane-${dir}`;
+  return `focus-${dir}`;
+}
+
+// Capture phase on window: runs before xterm's own keydown handling on its
+// hidden textarea, so preventDefault + stopPropagation keeps the chord out
+// of the pty. Real text fields (settings, rename box) keep ⌘←/→ as
+// line-start/end; modals keep their keys too.
+window.addEventListener('keydown', (ev) => {
+  if (!ev.metaKey || ev.ctrlKey) return;
+  const t = ev.target;
+  if (t instanceof HTMLInputElement || t.isContentEditable
+      || (t instanceof HTMLTextAreaElement && !t.classList.contains('xterm-helper-textarea'))) return;
+  if (document.querySelector('.modal-overlay')) return;
+  const cmd = paneCommandForKey(ev);
+  if (!cmd) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  PANE_COMMANDS[cmd]();
+}, true);
 
 // ---------------------------------------------------------------------------
 // Startup: reconcile saved layout with live server sessions
@@ -1023,41 +1230,43 @@ async function attachExisting() {
   const live = sessions.map((s) => s.id);
   const liveSet = new Set(live);
 
-  tree = loadLayout();
-  for (const id of collectIds(tree)) {
-    // stale terminal tab, session is gone (files tabs live client-side only)
-    if (!isFilesId(id) && !liveSet.has(id)) removeSessionFromTree(id);
+  const saved = loadLayout();
+  columns = saved.columns;
+  for (const id of allIds()) {
+    // stale terminal pane, session is gone (files panes live client-side only)
+    if (!isFilesId(id) && !liveSet.has(id)) removeFromColumn(id);
   }
-  const inTree = new Set(collectIds(tree));
+  const inLayout = new Set(allIds());
   for (const id of live) {
-    if (inTree.has(id)) continue; // session opened elsewhere — tab it into the first pane
-    if (tree) firstPane(tree).tabs.push(id);
-    else tree = paneNode(id);
+    if (!inLayout.has(id)) columns.push(newColumn(id)); // opened elsewhere — a column on the right
   }
 
-  focusedPane = firstPane(tree);
-  // Seed titles from the session list so background tabs show their real
-  // title immediately — their websocket (the usual title source) only
-  // connects once the tab is brought to the foreground.
+  focusedId = allIds().includes(saved.focused) ? saved.focused : (columns[0]?.active ?? null);
+  // Every pane is on the strip and connects its own socket, but seed the
+  // titles from the session list so the bars read right before the
+  // snapshots arrive.
   const titles = new Map(sessions.map((s) => [s.id, s.title]));
-  for (const id of collectIds(tree)) {
+  for (const id of allIds()) {
     if (isFilesId(id)) tiles.set(id, makeFilesTile(id));
     else makeTile(id).setTitle(titles.get(id));
   }
-  pruneWidgetStates(new Set(tiles.keys())); // drop state orphaned by closed tabs
+  pruneWidgetStates(new Set(tiles.keys())); // drop state orphaned by closed panes
   saveLayout();
   render();
-  if (!tree) await newSession();
+  if (!columns.length) await newSession();
+  else tiles.get(focusedId)?.focus(); // every tile's open() grabbed focus in turn
 }
 
 document.getElementById('new-session').addEventListener('click', newSession);
 document.getElementById('new-files').addEventListener('click', newFilesSession);
 document.getElementById('settings').addEventListener('click', showSettingsModal);
 // The Electron client hides the in-page header and relays its own header-
-// strip buttons (and the ⌘, menu item) as these events (main.js conns:cmd).
+// strip buttons, the Pane menu, and the ⌘, menu item as these events
+// (main.js chromeCmd).
 window.addEventListener('webmux-new-terminal', newSession);
 window.addEventListener('webmux-new-files', newFilesSession);
 window.addEventListener('webmux-settings-open', showSettingsModal);
+window.addEventListener('webmux-pane', (ev) => PANE_COMMANDS[ev.detail]?.());
 
 // A file dropped outside a widget's drop zone must not navigate the page
 // away from webmux (the browser default). Real targets handled it earlier
@@ -1065,18 +1274,43 @@ window.addEventListener('webmux-settings-open', showSettingsModal);
 window.addEventListener('dragover', (ev) => ev.preventDefault());
 window.addEventListener('drop', (ev) => ev.preventDefault());
 
+// Two-finger horizontal scrolling pans the strip. Explicit rather than the
+// browser's scroll chaining: xterm claims (preventDefault) any wheel event
+// with a vertical component, and trackpad swipes are rarely perfectly
+// horizontal. A file browser's own Miller columns scroll first; the strip
+// takes over once they hit their edge.
+layoutEl.addEventListener('wheel', (ev) => {
+  if (Math.abs(ev.deltaX) <= Math.abs(ev.deltaY)) return;
+  const inner = ev.target.closest?.('.files-cols');
+  if (inner) {
+    const atEdge = ev.deltaX > 0
+      ? inner.scrollLeft + inner.clientWidth >= inner.scrollWidth - 1
+      : inner.scrollLeft <= 0;
+    if (!atEdge) return;
+  }
+  ev.preventDefault();
+  ev.stopPropagation();
+  chase = null; // the hand wins over an in-flight reveal
+  layoutEl.scrollLeft += ev.deltaX;
+}, { passive: false, capture: true });
+
 let resizeTimer;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(fitAll, 100);
+  resizeTimer = setTimeout(() => { applyColumnWidths(); fitAll(); revealFocused(); }, 100);
+});
+
+// The minimum column width follows the setting live.
+onSettingsChange(() => {
+  applyColumnWidths();
+  fitAll();
+  revealFocused();
 });
 
 // xterm measures the cell grid from the font at open(); if the webfont isn't
 // ready yet the grid is sized from the fallback font and glyphs misalign.
 // Wait for it (bounded, in case the font 404s), then re-measure any terminals
 // that were opened before a late-arriving font.
-const TERM_FONT = '"JetBrainsMono Nerd Font", monospace';
-
 async function start() {
   // Settings first: the theme must be on <html> (and in THEMES for xterm)
   // before any pane paints. loadSettings never rejects.
@@ -1099,6 +1333,8 @@ async function start() {
       tile.term.options.fontFamily = 'monospace';
       tile.term.options.fontFamily = TERM_FONT;
     }
+    measureCell(); // the column minimum is in cells of the real font too
+    applyColumnWidths();
     fitAll();
   });
 }
