@@ -77,6 +77,7 @@ const stub = {
   Menu: { setApplicationMenu: () => {}, buildFromTemplate: (t) => t },
   shell: { openExternal: () => {}, openPath: () => {}, showItemInFolder: (p) => { revealed.push(p); } },
   powerMonitor: { on: () => {} },
+  session: { defaultSession: { on: () => {} } }, // will-download logging hook
   ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } },
   protocol: { registerSchemesAsPrivileged: () => {}, handle: (_scheme, fn) => { appScheme = fn; } },
   net: { fetch: () => Promise.reject(new Error('no net in tests')) },

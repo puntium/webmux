@@ -30,7 +30,7 @@
 
 const {
   app, BaseWindow, BrowserWindow, WebContentsView, Menu, shell, powerMonitor, ipcMain,
-  safeStorage, protocol, net: electronNet,
+  safeStorage, protocol, session, net: electronNet,
 } = require('electron');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
@@ -353,6 +353,16 @@ function appOrigin(conn) {
 const appUrl = (conn) => `${appOrigin(conn)}?port=${conn.localPort}`;
 const pageLive = (conn) => conn.localPort > 0 && conn.view.webContents.getURL() === appUrl(conn);
 
+// The file browser's download link: raw file bytes as an attachment, on this
+// connection's own tunnel port only (files-widget.js builds the URL).
+function isDownloadUrl(conn, url) {
+  if (!conn.localPort) return false;
+  let u;
+  try { u = new URL(url); } catch { return false; }
+  return u.origin === `http://127.0.0.1:${conn.localPort}`
+    && u.pathname === '/api/fs/raw' && u.searchParams.get('download') === '1';
+}
+
 // A connection whose page is up rides out tunnel blips in place (the page's
 // own WS retry heals it). One whose page never loaded has nothing to show —
 // if it is the one on screen, fall back to the connection page and its
@@ -400,9 +410,12 @@ function createConnection(profile) {
       updateTitle();
     }
   });
-  // Only this connection's own webmux:// origin may load in-window.
+  // Only this connection's own webmux:// origin may load in-window — plus
+  // the file browser's download link on its tunnel: the server answers that
+  // with an attachment, so Chromium turns the navigation into a download
+  // (save dialog) and the page stays where it is.
   wc.on('will-navigate', (ev, url) => {
-    if (url.startsWith(appOrigin(conn))) return;
+    if (url.startsWith(appOrigin(conn)) || isDownloadUrl(conn, url)) return;
     ev.preventDefault();
     if (/^https?:/.test(url)) shell.openExternal(url);
   });
@@ -1072,6 +1085,23 @@ function registerAppScheme() {
   });
 }
 
+// File-browser downloads (a ⤓ click in a preview header) go through
+// Chromium's normal download path: no save path is set here, so it prompts
+// a save dialog. This only narrates start and outcome to the connection log
+// of whichever host page the download came from.
+function watchDownloads() {
+  session.defaultSession.on('will-download', (_ev, item, wc) => {
+    const conn = [...conns.values()].find((c) => c.view.webContents === wc);
+    const name = conn ? conn.name : null;
+    const file = item.getFilename();
+    log.info(name, 'download started', { file, bytes: item.getTotalBytes() });
+    item.once('done', (_e, state) => {
+      if (state === 'completed') log.info(name, 'download saved', { file, path: item.getSavePath() });
+      else log.warn(name, `download ${state}`, { file }); // 'cancelled' | 'interrupted'
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Window & app lifecycle
 // ---------------------------------------------------------------------------
@@ -1210,6 +1240,7 @@ app.whenReady().then(() => {
   registerIpc();
   buildMenu();
   createWindow();
+  watchDownloads();
 
   // Lid-open: pre-sleep tunnels are dead but don't know it yet. Kill them
   // so reconnection starts now instead of after the keepalive timeout; the

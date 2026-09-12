@@ -473,13 +473,28 @@ route('POST', '/api/fs/rename', async (req, res) => {
   }
 });
 
-// Raw file bytes (image previews load this as <img src>).
+// Raw file bytes (image previews load this as <img src>). With ?download=1
+// the response is an attachment named after the file, so the browser saves
+// it instead of showing it — the preview header's download button.
 route('GET', '/api/fs/raw', (_req, res, url) => {
   const file = resolveFsPath(url.searchParams.get('path'));
   const mime = IMAGE_MIME[path.extname(file).slice(1).toLowerCase()];
+  const download = url.searchParams.get('download') === '1';
+  let st;
+  try { st = fs.statSync(file); }
+  catch (err) { return sendJson(res, 400, { error: err.code || String(err) }); }
+  if (!st.isFile()) return sendJson(res, 400, { error: 'not a file' });
   const stream = fs.createReadStream(file);
   stream.on('open', () => {
-    res.writeHead(200, { 'Content-Type': mime || 'application/octet-stream', ...CORS });
+    const headers = { 'Content-Type': mime || 'application/octet-stream', 'Content-Length': st.size, ...CORS };
+    if (download) {
+      const name = path.basename(file);
+      // ASCII fallback for old agents, RFC 5987 form for the real name.
+      const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+      headers['Content-Disposition'] =
+        `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+    }
+    res.writeHead(200, headers);
     stream.pipe(res);
   });
   stream.on('error', (err) => {

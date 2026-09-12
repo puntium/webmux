@@ -5,7 +5,8 @@
    localStorage next to the layout. Columns show the ancestor chain of `dir`;
    the cursor entry gets one extra column — a listing for directories, a
    preview (text/image/stat) for files — markdown renders by default, with a
-   Rendered / Source toggle in the preview header. Arrows / hjkl navigate
+   Rendered / Source toggle in the preview header, which also has a ⤓ button
+   that downloads the file (/api/fs/raw?download=1). Arrows / hjkl navigate
    like yazi;
    r/F2 renames the selected entry inline and d/Delete deletes it (after a
    confirm; directories delete recursively) — both also have buttons on the
@@ -454,6 +455,26 @@ export function makeFilesTile(id) {
     fmeta.textContent = `${formatSize(info.size)} · ${new Date(info.mtime).toLocaleString()}`;
     ftext.append(fname, fmeta);
     head.appendChild(ftext);
+
+    // Download: a link to the raw bytes as an attachment. Same-origin (plain
+    // browser) the download attribute saves it directly; under the Electron
+    // client the API is another origin, so the click is a navigation that
+    // main.js lets through for exactly this URL shape — the attachment
+    // response then becomes a save dialog and the page stays put.
+    if (info.kind !== 'other') {
+      const dl = document.createElement('a');
+      dl.className = 'files-act files-download';
+      dl.href = `${API}/api/fs/raw?path=${encodeURIComponent(filePath)}&download=1`;
+      dl.download = fsBase(filePath);
+      dl.title = 'Download';
+      dl.setAttribute('aria-label', `Download ${fsBase(filePath)}`);
+      dl.textContent = '⤓';
+      dl.addEventListener('click', () => {
+        setStatus(`downloading ${fsBase(filePath)}`);
+        colsEl.focus(); // keep keyboard navigation on the columns
+      });
+      head.appendChild(dl);
+    }
 
     const body = document.createElement('div');
     body.className = 'files-preview-body';

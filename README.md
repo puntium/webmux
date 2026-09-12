@@ -191,7 +191,10 @@ keys / `hjkl` like yazi. Selecting a file shows a preview column — text
 (client-side, via `marked`, with raw HTML shown as text) with a Rendered /
 Source toggle in the preview header; relative images load through
 `/api/fs/raw`, web links open in the browser (shift-click copies), and
-relative links navigate the browser to that entry. Files or folders dragged onto a column
+relative links navigate the browser to that entry. The preview header's ⤓
+button downloads the file to the local machine (`/api/fs/raw?download=1`
+serves it as an attachment; the Electron client shows the usual save
+dialog and notes the outcome in the connection log). Files or folders dragged onto a column
 upload into that column's directory — multiple at once is fine, and folders
 recreate their directory tree (empty subdirectories are skipped). Files or
 images pasted while the browser is focused upload into the rightmost
