@@ -126,7 +126,8 @@ has no config file):
 
 - `WEBMUX_PTYHOST=<name>` picks which pty host the server fronts (default
   `default`).
-- `WEBMUX_SOCKET=/path/to.sock` overrides the http socket path.
+- `WEBMUX_SOCKET=/path/to.sock` overrides the http socket path. Such a run
+  is a dev server on a private socket and does not write the advert.
 
 ### Pty host lifecycle
 

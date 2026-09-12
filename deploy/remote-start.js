@@ -73,12 +73,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function stopOldServer(advert) {
   if (!advert || !advert.pid || !pidIsWebmuxServer(advert.pid)) return;
-  try { process.kill(advert.pid, 'SIGTERM'); } catch { return; }
-  for (let i = 0; i < 30 && pidAlive(advert.pid); i++) await sleep(100);
-  if (pidAlive(advert.pid)) {
-    try { process.kill(advert.pid, 'SIGKILL'); } catch { /* raced */ }
-    for (let i = 0; i < 10 && pidAlive(advert.pid); i++) await sleep(100);
-  }
+  await stopPid(advert.pid);
 }
 
 function socketAnswers(sockPath) {
@@ -91,6 +86,51 @@ function socketAnswers(sockPath) {
   });
 }
 
+// The socket server.js listens on for this instance when WEBMUX_SOCKET is
+// not set — mirrors runDir()/HTTP_SOCK in ptyhost-client.js and server.js.
+function canonicalSocket() {
+  const dir = process.env.XDG_RUNTIME_DIR
+    ? path.join(process.env.XDG_RUNTIME_DIR, 'webmux')
+    : path.join(os.tmpdir(), `webmux-${os.userInfo().username}`);
+  return path.join(dir, `${name}.http.sock`);
+}
+
+// Pids of live server.js processes (ours) whose WEBMUX_PTYHOST is this
+// instance — found through /proc, so Linux only; elsewhere the advert is the
+// only source of truth. Covers the case where the advert points at a server
+// that is gone (or at a dev run on another socket) while an older deployed
+// server still holds the canonical socket: starting a new one would hit
+// EADDRINUSE and exit, and the connect would fail forever.
+function serversForInstance() {
+  const pids = [];
+  let entries;
+  try { entries = fs.readdirSync('/proc'); } catch { return pids; }
+  for (const ent of entries) {
+    if (!/^\d+$/.test(ent)) continue;
+    const pid = Number(ent);
+    if (pid === process.pid) continue;
+    try {
+      const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ');
+      if (!/server\.js/.test(cmdline) || !/webmux/.test(cmdline)) continue;
+      const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
+      const inst = (env.find((e) => e.startsWith('WEBMUX_PTYHOST=')) || 'WEBMUX_PTYHOST=default').slice('WEBMUX_PTYHOST='.length);
+      if ((inst || 'default') !== name) continue;
+      if (env.some((e) => e.startsWith('WEBMUX_SOCKET='))) continue; // dev run on its own socket
+      pids.push(pid);
+    } catch { /* not ours to read, or gone */ }
+  }
+  return pids;
+}
+
+async function stopPid(pid) {
+  try { process.kill(pid, 'SIGTERM'); } catch { return; }
+  for (let i = 0; i < 30 && pidAlive(pid); i++) await sleep(100);
+  if (pidAlive(pid)) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* raced */ }
+    for (let i = 0; i < 10 && pidAlive(pid); i++) await sleep(100);
+  }
+}
+
 async function main() {
   const advert = readAdvert();
   if (advert && advert.payloadHash === myHash && pidIsWebmuxServer(advert.pid)
@@ -100,6 +140,15 @@ async function main() {
   }
 
   await stopOldServer(advert);
+
+  // Whatever the advert said, nothing of ours may be left holding the
+  // canonical socket — the new server has to bind it.
+  if (await socketAnswers(canonicalSocket())) {
+    for (const pid of serversForInstance()) await stopPid(pid);
+    if (await socketAnswers(canonicalSocket())) {
+      fail(`another process is listening on ${canonicalSocket()} and could not be identified as a webmux server`);
+    }
+  }
 
   fs.mkdirSync(WEBMUX_DIR, { recursive: true, mode: 0o700 });
   const log = fs.openSync(logFile, 'a');

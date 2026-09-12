@@ -636,11 +636,18 @@ async function main() {
     // Advertise at a fixed home-relative location: the socket path embeds
     // the uid behind $XDG_RUNTIME_DIR, which the client can't compute, so
     // the deploy flow reads it from here instead.
-    const advertDir = path.join(HOME, '.webmux');
-    fs.mkdirSync(advertDir, { recursive: true, mode: 0o700 });
     // Advert for the deploy flow (deploy/remote-start.js and the Electron
     // client's push logic): which payload is running, as which pid, speaking
-    // which pty-host protocol, listening where.
+    // which pty-host protocol, listening where. A WEBMUX_SOCKET run is a dev
+    // server on a private socket and must not claim the instance's advert:
+    // once it exits, remote-start would trust its dead pid, leave the real
+    // deployed server holding the canonical socket, and fail to start.
+    if (process.env.WEBMUX_SOCKET) {
+      console.log(`webmux listening on ${HTTP_SOCK} (pty host '${HOST_NAME}', WEBMUX_SOCKET set: advert not written)`);
+      return;
+    }
+    const advertDir = path.join(HOME, '.webmux');
+    fs.mkdirSync(advertDir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(advertDir, `${HOST_NAME}.json`), JSON.stringify({
       socket: HTTP_SOCK,
       payloadHash: PAYLOAD_HASH,

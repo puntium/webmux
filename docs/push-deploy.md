@@ -25,8 +25,12 @@ independent servers and session sets on the same host).
    - if the advert (`~/.webmux/<instance>.json`) says this exact payload is
      already running, reuse it (a reconnect costs ~2s total);
    - otherwise SIGTERM the old **server** (never the pty host — sessions
-     live there and survive every upgrade), start `server.js` detached, and
-     wait for the new advert.
+     live there and survive every upgrade). The advert's pid is the first
+     candidate; if the instance's canonical socket still answers afterwards
+     (a stale advert — e.g. a server that died without cleanup), any live
+     `server.js` whose `WEBMUX_PTYHOST` is this instance is stopped too, so
+     the new server can bind. Then start `server.js` detached and wait for
+     the new advert.
 5. **Tunnel** — the standard `ssh -L` forward to the advertised socket.
 
 Every ssh child parks in the connection's cancellation slot, so Cancel /
