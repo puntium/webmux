@@ -1,5 +1,5 @@
 /* Client-wide settings: color scheme, the unfocused-pane fade, and the
-   minimum column width in terminal cells.
+   minimum and maximum column widths in terminal cells.
 
    Each host page is its own webmux:// origin, so localStorage would make
    these per host. Under the Electron client they live in main's config.json
@@ -9,7 +9,7 @@
    flip together. Loaded any other way (dev forward straight to the server)
    the page falls back to localStorage. */
 
-export const DEFAULTS = Object.freeze({ theme: 'dark', unfocusedFade: 40, minCols: 90 });
+export const DEFAULTS = Object.freeze({ theme: 'dark', unfocusedFade: 40, minCols: 90, maxCols: 200 });
 
 // Theme ids double as the <html data-theme> value the stylesheets key on;
 // only the terminal palette lives here because xterm paints on canvas.
@@ -64,6 +64,9 @@ export function sanitize(raw) {
     if (Number.isFinite(fade)) s.unfocusedFade = Math.round(Math.min(100, Math.max(0, fade)));
     const cols = Number(raw.minCols);
     if (Number.isFinite(cols)) s.minCols = Math.round(Math.min(400, Math.max(40, cols)));
+    const maxCols = Number(raw.maxCols);
+    if (Number.isFinite(maxCols)) s.maxCols = Math.round(Math.min(400, Math.max(40, maxCols)));
+    if (s.maxCols < s.minCols) s.maxCols = s.minCols; // whichever moved, the range stays a range
   }
   return s;
 }

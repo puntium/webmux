@@ -150,11 +150,13 @@ On a deployed host these run under the pushed node:
 
 The workspace is a horizontal strip of **columns**, each a vertical stack of
 one or more **panes** (a terminal or a file browser), like niri or PaperWM.
-Columns are at least *Minimum terminal width* characters wide (a setting,
-default 90) and never narrower than half the window: while they all fit
-they share the window equally; open more and the strip scrolls sideways,
-following the focused pane. The focused pane
-wears an accent border; its title bar spans the pane's width.
+Column widths follow two settings, in characters: *Minimum terminal width*
+(default 90) and *Maximum terminal width* (default 200). As many columns as
+fit the window at the minimum share it exactly, so a wide window shows
+three, four or five whole columns; fewer columns than that grow to share
+the window up to the maximum and sit centred; open more and the strip
+scrolls sideways, following the focused pane. The focused pane wears an
+accent border; its title bar spans the pane's width.
 
 | Keys | Action |
 | --- | --- |
@@ -163,9 +165,9 @@ wears an accent border; its title bar spans the pane's width.
 | ⌘W | close the focused pane (kills a terminal's session, no confirmation) |
 | ⌘F | toggle the focused pane to the whole window; a stacked pane first splits out into its own column |
 | ⌘← → ↑ ↓ or ⌘h j k l | move focus between columns / within a stack (each column remembers its active pane) |
-| ⇧⌘← → | move the whole column left / right |
+| ⇧⌘← → | a pane sharing a column splits out into its own column on that side; a pane alone in its column moves the whole column left / right |
 | ⇧⌘↑ ↓ or ⌥⌘↑ ↓ | move the pane up / down within its stack |
-| ⌥⌘← → | a pane alone in its column merges into the neighbouring column on that side; a pane sharing a column splits out into its own column on that side |
+| ⌥⌘← → | merge the pane into the neighbouring column on that side (leaving its stack in one step; a column it empties goes away); with no column there, a stacked pane splits out instead |
 
 The same commands sit in the client's **Pane** menu. In the client, ⌘H /
 ⌥⌘H (Hide) and ⌘⇧L (Connection Log, now ⌃⌘L) gave up their shortcuts to
@@ -176,12 +178,15 @@ make room for the vim keys. Other pointers:
   column rule. Two-finger horizontal scrolling pans the strip.
 - **✕** in a pane's title bar closes it — for terminals that kills the
   session (`DELETE /api/sessions/:id`); a shell exiting closes its pane on
-  its own. Focus moves to the next pane in the stack, else to a neighbour.
+  its own. A closing column shrinks away and its neighbours slide in; a
+  closing stacked pane collapses while the rest of its stack grows into
+  its place from above and below. Focus moves to the next pane in the
+  stack, else to a neighbour.
 - ⌘R reloads the page: live sessions reattach with state and layout intact.
   Sessions opened elsewhere (another client) appear as columns on the right.
 - **⚙** in the header (⌘, in the client) opens the settings panel: the color
   scheme (*Dark mode default* or *Light mode*), how much unfocused panes
-  fade, and the minimum terminal width. These are client-wide — the client keeps them in its `config.json`
+  fade, and the minimum and maximum terminal widths. These are client-wide — the client keeps them in its `config.json`
   and every connected host page follows a change at once (the page reads and
   writes them at `/settings.json` on its own `webmux://` origin; served
   directly by the server instead, they fall back to localStorage).

@@ -1,15 +1,17 @@
 /* webmux client — scrolling column layout (niri / PaperWM style).
    The workspace is a horizontal strip of columns; each column is a vertical
-   stack of panes, each pane one tile. Columns are at least a configurable
-   number of terminal cells wide (settings: minCols) and at least half the
-   window: while every column fits they share the viewport equally, past
-   that each stays at the minimum and the strip scrolls sideways, following
-   the focused pane. Heights
-   within a column are drag-resizable; widths follow the rule. Everything is
+   stack of panes, each pane one tile. Column widths follow a rule
+   (applyColumnWidths): as many columns as fit the window at the minimum
+   terminal width (settings: minCols) share it exactly, so a wide window
+   shows three, four, five whole columns; fewer columns than that grow to
+   share the window up to the maximum width (settings: maxCols) and sit
+   centred; more than that scroll sideways, following the focused pane.
+   Heights within a column are drag-resizable. Everything is
    keyboard-driven (⌘↩ new terminal, ⌥⌘↩ terminal below, ⌘⇧↩ new file browser, ⌘W close, ⌘F
-   full-window toggle, ⌘+arrows/hjkl to focus, ⇧⌘ to move a column or a
-   pane within its stack, ⌥⌘ to merge a lone pane into the neighbouring
-   column or split a stacked one out — see paneCommandForKey). Sessions live on the server; the layout is saved to
+   full-window toggle, ⌘+arrows/hjkl to focus, ⇧⌘ to move a pane within
+   its stack, out of it into a column of its own, or its whole column, ⌥⌘
+   to merge it into the neighbouring column — see paneCommandForKey).
+   Sessions live on the server; the layout is saved to
    localStorage — per origin, so per host and per client — and a reload
    restores both the sessions (from headless snapshots) and the arrangement.
 
@@ -347,14 +349,20 @@ function chaseStep(now) {
   requestAnimationFrame(chaseStep);
 }
 
-// Column width rule: every column is at least minCols terminal cells wide
-// (plus the pane chrome around the grid) and at least half the strip, so
-// two columns at most share the window side by side. With flex-grow the
-// columns share any spare viewport width equally, and with flex-shrink 0
-// they overflow into a horizontal scroll rather than squeezing below the
-// minimum. A window narrower than the cell minimum caps a column at the
-// viewport (the min(…, 100%) in the stylesheet) so it stays entirely
-// visible.
+// Column width rule. Widths come in two settings, in terminal cells:
+// minCols, the narrowest a column may be, and maxCols, the widest. The
+// number of columns that fit the strip side by side at the minimum is the
+// most it will ever show at once; the strip is split exactly that many
+// ways (each share at least the minimum, so --col-min is really "the
+// width of a column when the strip is full"), which is what maximises
+// the number of whole columns on a wide window: 90-cell columns on a
+// 3840px screen come five abreast. Columns are flex items with that basis
+// and no shrink, so past that count they overflow into a horizontal
+// scroll rather than squeezing; fewer than that grow to share the strip
+// (flex-grow) but no wider than --col-max, and the strip centres what is
+// left over (justify-content: safe center). A window narrower than the
+// cell minimum caps a column at the viewport (the min(…, 100%) in the
+// stylesheet) so it stays entirely visible.
 let cellWidth = 0;
 function measureCell() {
   const probe = document.createElement('span');
@@ -367,11 +375,25 @@ function measureCell() {
 // Pane border (2) + term-holder padding (8) + xterm's viewport scrollbar (10)
 // + a little rounding slack, so minCols cells really fit.
 const PANE_CHROME_PX = 2 + 8 + 10 + 4;
+const STRIP_PAD_PX = 6; // #layout padding
+const COL_GAP_PX = 6; // #layout gap
+// How the strip splits at the given cell widths: the column count that
+// fits and the width each gets.
+function columnWidths(stripWidth, cellPx, minCols, maxCols) {
+  const cellsPx = (cols) => Math.ceil(cols * cellPx) + PANE_CHROME_PX;
+  const min = cellsPx(minCols);
+  const max = Math.max(min, cellsPx(maxCols));
+  const inner = stripWidth - 2 * STRIP_PAD_PX;
+  const fit = Math.max(1, Math.floor((inner + COL_GAP_PX) / (min + COL_GAP_PX)));
+  const share = Math.floor((inner - (fit - 1) * COL_GAP_PX) / fit);
+  return { fit, min: Math.min(max, Math.max(min, share)), max };
+}
 function applyColumnWidths() {
   if (!cellWidth) measureCell();
-  const cells = Math.ceil(getSettings().minCols * cellWidth) + PANE_CHROME_PX;
-  const half = Math.floor((layoutEl.clientWidth - 12 - 6) / 2); // minus padding and one gap
-  layoutEl.style.setProperty('--col-min', `${Math.max(cells, half)}px`);
+  const { minCols, maxCols } = getSettings();
+  const { min, max } = columnWidths(layoutEl.clientWidth, cellWidth, minCols, maxCols);
+  layoutEl.style.setProperty('--col-min', `${min}px`);
+  layoutEl.style.setProperty('--col-max', `${max}px`);
 }
 
 // Divider between panes i and i+1 of a column: dragging reassigns the
@@ -587,7 +609,15 @@ function showSettingsModal() {
           <input class="cols-input" type="number" min="40" max="400" step="1" />
           <span class="setting-unit">columns</span>
         </span>
-        <span class="setting-desc">Every column is at least this many characters wide, and never narrower than half the window. Columns share the window while they fit; past that the layout scrolls sideways.</span>
+        <span class="setting-desc">No column is narrower than this. As many columns as fit at this width share the window exactly; open more and the layout scrolls sideways.</span>
+      </label>
+      <label class="setting">
+        <span class="setting-label">Maximum terminal width</span>
+        <span class="setting-control">
+          <input class="max-cols-input" type="number" min="40" max="400" step="1" />
+          <span class="setting-unit">columns</span>
+        </span>
+        <span class="setting-desc">No column is wider than this. Fewer columns than fit the window grow to share it up to this width and sit centred.</span>
       </label>
       <div class="setting">
         <span class="setting-label">Connection log</span>
@@ -608,11 +638,13 @@ function showSettingsModal() {
   const range = overlay.querySelector('.fade-range');
   const value = overlay.querySelector('.fade-value');
   const cols = overlay.querySelector('.cols-input');
+  const maxCols = overlay.querySelector('.max-cols-input');
   const sync = (s) => {
     select.value = s.theme;
     range.value = s.unfocusedFade;
     value.textContent = `${s.unfocusedFade}%`;
     if (document.activeElement !== cols) cols.value = s.minCols;
+    if (document.activeElement !== maxCols) maxCols.value = s.maxCols;
   };
   sync(getSettings());
   const unsubscribe = onSettingsChange(sync); // a push from another host's page
@@ -641,9 +673,17 @@ function showSettingsModal() {
     updateSettings({ unfocusedFade: range.value }, { persist: false });
   });
   range.addEventListener('change', () => updateSettings({ unfocusedFade: range.value }));
+  // Each shows its clamped value back; a change to one can move the other
+  // (the maximum is never below the minimum).
   cols.addEventListener('change', () => {
     updateSettings({ minCols: cols.value });
-    cols.value = getSettings().minCols; // show the clamped value
+    cols.value = getSettings().minCols;
+    maxCols.value = getSettings().maxCols;
+  });
+  maxCols.addEventListener('change', () => {
+    updateSettings({ maxCols: maxCols.value });
+    maxCols.value = getSettings().maxCols;
+    cols.value = getSettings().minCols;
   });
   overlay.querySelector('.settings-close').addEventListener('click', close);
   overlay.querySelector('.log-open').addEventListener('click', async () => {
@@ -974,29 +1014,78 @@ function makeTile(sessionId) {
   return tile;
 }
 
-// Closing animation: a pane alone in its column takes the column with it,
-// shrinking to zero width with its left edge fixed (the neighbours slide
-// in from the right); a stacked pane shrinks to zero height from the
-// bottom. The content stays put and is clipped, and nothing is refitted
-// until the structural render afterwards. Resolves when done, or at once
-// under reduced motion; bounded so a detached element can't stall it.
-const CLOSE_MS = 160;
+// Closing animation. A pane alone in its column takes the column with it:
+// the column shrinks to zero width with its left edge fixed and the
+// neighbours slide in from the right (they widen as they go if the rule
+// now gives them more room). A stacked pane collapses while the rest of
+// its stack grows into the room it leaves: every pane in the column
+// animates from its current height to its share of the column without
+// the closing one, all on the same clock, so the survivors above and
+// below close in on it from both sides and meet where it was. The
+// closing pane's content stays put on screen — its box shrinks around it
+// and clips it — rather than scrolling with the box. The content is left
+// alone and nothing is refitted until the structural render afterwards.
+// Resolves when done, or at once under reduced motion; bounded so a
+// detached element can't stall it.
+const CLOSE_MS = 180;
+const CLOSE_EASE = 'ease-in-out';
 async function animateRemoval(id) {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const pane = paneEl(id);
   const col = columnOf(id);
   if (!pane || !col) return;
-  const lone = col.panes.length === 1;
-  const el = lone ? pane.parentElement : pane;
-  const size = lone ? el.getBoundingClientRect().width : el.getBoundingClientRect().height;
-  if (!lone) {
-    const divider = pane.previousElementSibling || pane.nextElementSibling;
-    if (divider?.classList.contains('divider')) divider.style.display = 'none';
+  const opts = { duration: CLOSE_MS, easing: CLOSE_EASE, fill: 'forwards' };
+  let anims;
+  if (col.panes.length === 1) {
+    const el = pane.parentElement;
+    const width = el.getBoundingClientRect().width;
+    Object.assign(el.style, { overflow: 'hidden', flex: 'none', minWidth: '0', maxWidth: 'none' });
+    anims = [el.animate([{ width: `${width}px` }, { width: '0px' }], opts)];
+  } else {
+    anims = collapseInStack(pane, col.sizes, col.panes.indexOf(id), opts);
   }
-  Object.assign(el.style, { overflow: 'hidden', flex: 'none', minWidth: '0', minHeight: '0' });
-  const prop = lone ? 'width' : 'height';
-  const anim = el.animate([{ [prop]: `${size}px` }, { [prop]: '0px' }], { duration: CLOSE_MS, easing: 'ease-in', fill: 'forwards' });
-  await Promise.race([anim.finished.catch(() => {}), new Promise((r) => setTimeout(r, CLOSE_MS + 50))]);
+  await Promise.race([
+    Promise.all(anims.map((a) => a.finished)).catch(() => {}),
+    new Promise((r) => setTimeout(r, CLOSE_MS + 50)),
+  ]);
+}
+
+// The stacked case of animateRemoval: pane is the i-th of its column, and
+// weights are the column's stack weights (the survivors keep theirs; the
+// render afterwards normalises them, which is what the target heights
+// here anticipate). Returns the animations started.
+function collapseInStack(pane, weights, i, opts) {
+  const panes = [...pane.parentElement.querySelectorAll(':scope > .pane')];
+  const rects = panes.map((p) => p.getBoundingClientRect());
+  const heights = rects.map((r) => r.height);
+  // The divider that goes with the pane — above it, or below the top pane
+  // — folds away too; its room (margins included) is the gap to the
+  // neighbour it separates the pane from.
+  const divider = i ? pane.previousElementSibling : pane.nextElementSibling;
+  const gap = i ? rects[i].top - rects[i - 1].bottom : rects[1].top - rects[0].bottom;
+  const room = heights.reduce((a, b) => a + b, 0) + gap;
+  const total = weights.reduce((a, w, k) => (k === i ? a : a + w), 0) || 1;
+  const finals = heights.map((h, k) => (k === i ? 0 : Math.round(room * weights[k] / total)));
+  const anims = [];
+  panes.forEach((p, k) => {
+    p.style.flex = 'none';
+    anims.push(p.animate([{ height: `${heights[k]}px` }, { height: `${finals[k]}px` }], opts));
+  });
+  const dividerStyle = getComputedStyle(divider);
+  anims.push(divider.animate(
+    [{ height: dividerStyle.height, margin: dividerStyle.margin }, { height: '0px', margin: '0px' }],
+    opts,
+  ));
+  // The pane's top edge moves by however much the panes above grow, less
+  // the divider that folds away above it; counter that so the content
+  // holds still on screen. The body keeps its size instead of shrinking
+  // with the pane, so the box clips it rather than reflowing it.
+  const shift = heights.reduce((a, h, k) => (k < i ? a + finals[k] - h : a), 0) - (i ? gap : 0);
+  for (const child of pane.children) {
+    if (child.classList.contains('pane-body')) child.style.flex = `0 0 ${child.getBoundingClientRect().height}px`;
+    anims.push(child.animate([{ transform: 'translateY(0)' }, { transform: `translateY(${-shift}px)` }], opts));
+  }
+  return anims;
 }
 
 async function removeTile(sessionId, killServerSession) {
@@ -1094,12 +1183,24 @@ function commitMove() {
   tiles.get(focusedId)?.focus();
 }
 
-// ⇧⌘←/→: the whole column swaps places with its neighbour.
+// ⇧⌘←/→: a pane sharing a column splits out into a column of its own on
+// that side; a pane alone in its column takes the column with it,
+// swapping places with the neighbouring column.
 function moveColumn(dir) {
   const ci = columnIndexOf(focusedId);
+  if (ci === -1) return;
+  if (columns[ci].panes.length > 1) return expel(dir);
   const ti = ci + dir;
-  if (ci === -1 || ti < 0 || ti >= columns.length) return;
+  if (ti < 0 || ti >= columns.length) return;
   [columns[ci], columns[ti]] = [columns[ti], columns[ci]];
+  commitMove();
+}
+
+// The pane leaves its stack for a new column of its own on that side.
+function expel(dir) {
+  const ci = columnIndexOf(focusedId);
+  removeFromColumn(focusedId);
+  columns.splice(dir > 0 ? ci + 1 : ci, 0, newColumn(focusedId));
   commitMove();
 }
 
@@ -1115,22 +1216,20 @@ function movePane(dir) {
   commitMove();
 }
 
-// ⌥⌘←/→, niri's consume-or-expel: a pane alone in its column merges into
-// the neighbouring column on that side (at the bottom); a pane sharing a
-// column splits out into a new column of its own on that side.
-function consumeOrExpel(dir) {
+// ⌥⌘←/→: the pane merges into the neighbouring column on that side (at
+// the bottom), leaving its stack in one step; a column it empties goes
+// with it. With no column on that side a stacked pane splits out into a
+// new column there instead, and a lone one has nowhere to go.
+function mergeInto(dir) {
   const ci = columnIndexOf(focusedId);
   if (ci === -1) return;
-  const col = columns[ci];
-  if (col.panes.length === 1) {
-    const target = columns[ci + dir];
-    if (!target) return;
-    columns.splice(ci, 1);
-    insertIntoColumn(target, focusedId);
-  } else {
-    removeFromColumn(focusedId);
-    columns.splice(dir > 0 ? ci + 1 : ci, 0, newColumn(focusedId));
+  const target = columns[ci + dir];
+  if (!target) {
+    if (columns[ci].panes.length > 1) expel(dir);
+    return;
   }
+  removeFromColumn(focusedId);
+  insertIntoColumn(target, focusedId);
   commitMove();
 }
 
@@ -1172,8 +1271,8 @@ const PANE_COMMANDS = {
   'move-column-right': () => moveColumn(1),
   'move-pane-up': () => movePane(-1),
   'move-pane-down': () => movePane(1),
-  'consume-expel-left': () => consumeOrExpel(-1),
-  'consume-expel-right': () => consumeOrExpel(1),
+  'consume-expel-left': () => mergeInto(-1),
+  'consume-expel-right': () => mergeInto(1),
 };
 
 // ⌘ bindings. Letters go by ev.code: ⌥ on macOS turns ⌥h into '˙' in
@@ -1300,7 +1399,7 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(() => { applyColumnWidths(); fitAll(); revealFocused(); }, 100);
 });
 
-// The minimum column width follows the setting live.
+// The column widths follow the settings live.
 onSettingsChange(() => {
   applyColumnWidths();
   fitAll();

@@ -129,7 +129,7 @@ const findProfile = (name) => store.profiles.find((p) => p.name === name);
 // (broadcastSettings). Main only keeps the values well-formed — the theme
 // list lives in the page (ui/settings.js), which falls back to dark for an
 // id it doesn't know.
-const SETTINGS_DEFAULTS = Object.freeze({ theme: 'dark', unfocusedFade: 40, minCols: 90 });
+const SETTINGS_DEFAULTS = Object.freeze({ theme: 'dark', unfocusedFade: 40, minCols: 90, maxCols: 200 });
 
 function sanitizeSettings(raw, base = SETTINGS_DEFAULTS) {
   const s = { ...base };
@@ -139,6 +139,9 @@ function sanitizeSettings(raw, base = SETTINGS_DEFAULTS) {
     if (Number.isFinite(fade)) s.unfocusedFade = Math.round(Math.min(100, Math.max(0, fade)));
     const cols = Number(raw.minCols);
     if (Number.isFinite(cols)) s.minCols = Math.round(Math.min(400, Math.max(40, cols)));
+    const maxCols = Number(raw.maxCols);
+    if (Number.isFinite(maxCols)) s.maxCols = Math.round(Math.min(400, Math.max(40, maxCols)));
+    if (s.maxCols < s.minCols) s.maxCols = s.minCols; // whichever moved, the range stays a range
   }
   return s;
 }
@@ -968,13 +971,13 @@ const PANE_MENU = [
   ['Focus Up', 'Cmd+Up', 'focus-up'],
   ['Focus Down', 'Cmd+Down', 'focus-down'],
   null,
-  ['Move Column Left', 'Shift+Cmd+Left', 'move-column-left'],
-  ['Move Column Right', 'Shift+Cmd+Right', 'move-column-right'],
+  ['Move Left', 'Shift+Cmd+Left', 'move-column-left'],
+  ['Move Right', 'Shift+Cmd+Right', 'move-column-right'],
   ['Move Pane Up', 'Shift+Cmd+Up', 'move-pane-up'],
   ['Move Pane Down', 'Shift+Cmd+Down', 'move-pane-down'],
   null,
-  ['Merge or Split Out Left', 'Alt+Cmd+Left', 'consume-expel-left'],
-  ['Merge or Split Out Right', 'Alt+Cmd+Right', 'consume-expel-right'],
+  ['Merge Left', 'Alt+Cmd+Left', 'consume-expel-left'],
+  ['Merge Right', 'Alt+Cmd+Right', 'consume-expel-right'],
 ];
 const PANE_COMMANDS = new Set(PANE_MENU.filter(Boolean).map(([, , cmd]) => cmd));
 function chromeCmd(cmd) {

@@ -175,17 +175,21 @@
       z-index: 200;
     }
     #toast.show { opacity: 1; transform: translateY(0); }
-    /* The scrolling strip of columns (app.js). Columns are flex items with
-       a basis of --col-min (the minimum-width setting in pixels, set by
-       app.js) and no shrink: while they all fit they grow to share the
-       width, past that the strip overflows into a horizontal scroll. The
-       min(…, 100%) keeps a column no wider than a window that is itself
-       narrower than the minimum. position: relative makes column
-       offsetLeft strip-relative for the scroll-into-view math. */
+    /* The scrolling strip of columns (app.js applyColumnWidths). Columns
+       are flex items with a basis of --col-min (the strip's width split as
+       many ways as the minimum-width setting allows, in pixels) and no
+       shrink: while they all fit they grow to share the width, up to
+       --col-max, and sit centred (safe center falls back to the start
+       when they overflow, so nothing is scrolled out of reach); past that
+       the strip overflows into a horizontal scroll. The min(…, 100%)
+       keeps a column no wider than a window that is itself narrower than
+       the minimum. position: relative makes column offsetLeft
+       strip-relative for the scroll-into-view math. */
     #layout {
       position: relative;
       flex: 1;
       display: flex;
+      justify-content: safe center;
       gap: 6px;
       padding: 6px;
       min-height: 0;
@@ -196,12 +200,13 @@
     }
     .column {
       flex: 1 0 min(var(--col-min, 600px), 100%);
+      max-width: var(--col-max, 100%);
       display: flex;
       flex-direction: column;
       min-width: 0;
       min-height: 0;
     }
-    .column.full { flex-basis: 100%; } /* ⌘F: the whole window */
+    .column.full { flex-basis: 100%; max-width: 100%; } /* ⌘F: the whole window */
     /* Divider between stacked panes: drag to reassign heights. */
     .divider {
       flex: none;
