@@ -4,22 +4,30 @@
    (never a server session id) and its state ({ dir, cursor }) persists in
    localStorage next to the layout. Columns show the ancestor chain of `dir`;
    the cursor entry gets one extra column — a listing for directories, a
-   preview (text/image/stat) for files — markdown renders by default, with a
-   Rendered / Source toggle in the preview header, which also has a ⤓ button
-   that downloads the file (/api/fs/raw?download=1). Arrows / hjkl navigate
-   like yazi;
-   r/F2 renames the selected entry inline and d/Delete deletes it (after a
-   confirm; directories delete recursively) — both also have buttons on the
-   selected row. Files or folders dragged onto a column upload into that
-   column's directory (folders recreate their tree); files or images pasted
-   while the widget is focused upload into the rightmost directory shown.
+   preview (text/image/zip listing/stat) for files — markdown renders by
+   default, with a Rendered / Source toggle in the preview header, which
+   also has a ⤓ button that downloads the file (/api/fs/raw?download=1).
+   Listing columns size themselves to their longest name (within limits);
+   the preview column is wide for content and narrow when there is nothing
+   to show but the stat line. Arrows / hjkl navigate like yazi; drilling
+   back into a directory visited earlier in this session re-selects the
+   entry that was under the cursor there. r/F2 renames the selected entry
+   inline and d/Delete deletes it (after a confirm centred in the pane;
+   directories delete recursively) — both also have buttons on the selected
+   row. Files or folders dragged onto a column upload into that column's
+   directory (folders recreate their tree); files or images pasted while the
+   widget is focused upload into the rightmost directory shown. Listings
+   stay live: the cursor's directory (and the folder it points at) are
+   watched over /api/fs/watch (server-sent events) and re-list on change,
+   and the pane regaining focus re-lists every column shown.
    Renders are keyed diffs (patchCols): surviving columns keep their scroll
    position, removed ones collapse and new ones grow in, and the horizontal
    scroll eases to the newest column instead of jumping.
 
    app.js owns the layout machinery and registers the tile returned by
    makeFilesTile() — the tile interface it expects is
-   { root, openIfNeeded(), fitAndReport(), focus(), term, ws, label() }. */
+   { root, openIfNeeded(), fitAndReport(), focus(), term, ws, label() },
+   plus an optional dispose() it calls when the pane closes. */
 
 // Circular with app.js's import of this module, which is fine: both modules
 // only call across the cycle at runtime, never during evaluation.
@@ -170,21 +178,23 @@ async function dropFiles(ev) {
   return out;
 }
 
-// Delete confirmation, styled like the terminal link chooser. Resolves true
-// on confirm; Escape / backdrop / Cancel resolve false.
-function confirmModal(text) {
+// Delete confirmation, styled like the terminal link chooser but scoped to
+// the pane: the overlay is absolutely positioned inside `host` so the box
+// centres over the file browser and the rest of the layout is untouched.
+// Resolves true on confirm; Escape / backdrop / Cancel resolve false.
+function confirmModal(host, text) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
-    overlay.className = 'link-modal-overlay';
+    overlay.className = 'modal-overlay files-modal-overlay';
     overlay.innerHTML = `
-      <div class="link-modal" role="dialog" aria-label="Confirm delete">
-        <div class="link-url"></div>
-        <div class="link-actions">
+      <div class="modal files-confirm" role="dialog" aria-label="Confirm delete">
+        <div class="files-confirm-text"></div>
+        <div class="actions">
           <button class="link-cancel">Cancel</button>
           <button class="confirm-del danger">Delete</button>
         </div>
       </div>`;
-    overlay.querySelector('.link-url').textContent = text;
+    overlay.querySelector('.files-confirm-text').textContent = text;
     const done = (val) => {
       overlay.remove();
       document.removeEventListener('keydown', onKey, true);
@@ -201,7 +211,7 @@ function confirmModal(text) {
     overlay.addEventListener('click', (ev) => { if (ev.target === overlay) done(false); });
     overlay.querySelector('.link-cancel').addEventListener('click', () => done(false));
     overlay.querySelector('.confirm-del').addEventListener('click', () => done(true));
-    document.body.appendChild(overlay);
+    host.appendChild(overlay);
     overlay.querySelector('.confirm-del').focus();
   });
 }
@@ -231,10 +241,16 @@ export function makeFilesTile(id) {
   colsEl.tabIndex = 0; // receives arrow-key navigation and paste events
   root.appendChild(colsEl);
 
-  // Short-TTL listing cache: keyboard navigation stays snappy, external
-  // changes still show up on the next interaction a few seconds later.
+  // Short-TTL listing cache: keyboard navigation stays snappy; external
+  // changes arrive through the directory watch and the focus refresh
+  // (both drop the affected entries), or on the next interaction a few
+  // seconds later at worst.
   const listCache = new Map(); // dir -> { t, data }
   const LIST_TTL = 4000;
+
+  // Where the cursor sat in each directory visited this session (memory
+  // only): drilling back into a folder re-selects that entry.
+  const cursorMemory = new Map(); // dir -> entry name
   async function list(dir) {
     const hit = listCache.get(dir);
     if (hit && Date.now() - hit.t < LIST_TTL) return hit.data;
@@ -289,7 +305,7 @@ export function makeFilesTile(id) {
     const entries = (await list(state.dir)).entries || [];
     const entry = entries.find((e) => e.name === name);
     if (!entry) return;
-    const ok = await confirmModal(entry.type === 'dir'
+    const ok = await confirmModal(root, entry.type === 'dir'
       ? `Delete folder “${name}” and everything in it?`
       : `Delete “${name}”?`);
     colsEl.focus();
@@ -374,10 +390,28 @@ export function makeFilesTile(id) {
     });
   }
 
+  // A listing column is as wide as its longest name plus the row chrome
+  // (padding, arrow, the selected row's action buttons), between COL_MIN and
+  // COL_MAX, so long filenames read whole instead of ellipsizing at a fixed
+  // width. Measured on a canvas in the rows' font — cheaper than a layout
+  // pass and, being an explicit pixel width, still animatable.
+  const COL_MIN = 200;
+  const COL_MAX = 420;
+  const COL_CHROME = 72;
+  let measureCtx = null;
+  function colWidth(entries) {
+    measureCtx ||= document.createElement('canvas').getContext('2d');
+    measureCtx.font = `12.5px ${getComputedStyle(colsEl).fontFamily || 'sans-serif'}`;
+    let w = 0;
+    for (const e of entries) w = Math.max(w, measureCtx.measureText(e.name).width);
+    return Math.round(Math.max(COL_MIN, Math.min(COL_MAX, w + COL_CHROME)));
+  }
+
   function buildCol(dirPath, data, hlName, isCursorCol) {
     const col = document.createElement('div');
     col.className = 'files-col';
     col.dataset.key = dirPath;
+    if (data.entries?.length) col.style.width = `${colWidth(data.entries)}px`;
     enableDrop(col, () => dirPath);
     if (data.error) {
       col.appendChild(msg(data.error));
@@ -451,7 +485,10 @@ export function makeFilesTile(id) {
     fname.textContent = fsBase(filePath);
     const fmeta = document.createElement('div');
     fmeta.className = 'fmeta';
-    fmeta.textContent = `${formatSize(info.size)} · ${new Date(info.mtime).toLocaleString()}`;
+    const metaBits = [formatSize(info.size)];
+    if (info.kind === 'zip') metaBits.push(`${info.count} ${info.count === 1 ? 'entry' : 'entries'}`);
+    metaBits.push(new Date(info.mtime).toLocaleString());
+    fmeta.textContent = metaBits.join(' · ');
     ftext.append(fname, fmeta);
     head.appendChild(ftext);
 
@@ -540,6 +577,27 @@ export function makeFilesTile(id) {
       });
     } else if (info.kind === 'text') {
       sourceView();
+    } else if (info.kind === 'zip') {
+      // Table of contents in archive order, `unzip -l` style: one row per
+      // member with its uncompressed size; directory members show a
+      // trailing slash and no size.
+      const listEl = document.createElement('div');
+      listEl.className = 'files-zip';
+      for (const e of info.entries) {
+        const row = document.createElement('div');
+        row.className = 'files-zip-entry' + (e.dir ? ' dir' : '');
+        const nm = document.createElement('span');
+        nm.className = 'files-zip-name';
+        nm.textContent = e.name;
+        const sz = document.createElement('span');
+        sz.className = 'files-zip-size';
+        sz.textContent = e.dir ? '' : formatSize(e.size);
+        row.append(nm, sz);
+        listEl.appendChild(row);
+      }
+      body.appendChild(listEl);
+      if (!info.entries.length) body.appendChild(msg('(empty archive)'));
+      if (info.truncated) body.appendChild(msg('(list truncated)'));
     } else if (info.kind === 'binary') {
       body.appendChild(msg('binary file'));
     } else {
@@ -550,6 +608,10 @@ export function makeFilesTile(id) {
     return wrap;
   }
 
+  // Previews with nothing to show but the header (binary files, sockets,
+  // stat errors) get the narrow preview column.
+  const hasPreview = (info) => !info.error && ['image', 'text', 'zip'].includes(info.kind);
+
   function buildPreviewCol(filePath, g) {
     const col = document.createElement('div');
     col.className = 'files-col files-preview';
@@ -557,12 +619,21 @@ export function makeFilesTile(id) {
     // column in place instead of tearing it down and growing a new one.
     col.dataset.key = 'preview';
     enableDrop(col, () => fsParent(filePath));
+    // Start at the width the preview column already has (narrow or wide)
+    // and settle once the stat arrives, so stepping between files of a
+    // kind doesn't flicker the column through the other width.
+    const prev = colsEl.querySelector('.files-preview:not(.leaving)');
+    col.classList.toggle('narrow', !!prev?.classList.contains('narrow'));
     col.appendChild(msg('…'));
     fetch(`${API}/api/fs/preview?path=${encodeURIComponent(filePath)}`)
       .then((r) => r.json())
       .then((info) => {
         if (g !== gen) return; // superseded by a newer render
+        const narrow = !hasPreview(info);
+        const resized = col.classList.contains('narrow') !== narrow;
+        col.classList.toggle('narrow', narrow);
         col.replaceChildren(info.error ? msg(info.error) : previewContent(filePath, info));
+        if (resized) smoothScrollRight(); // follow the column's width transition
       })
       .catch(() => { if (g === gen) col.replaceChildren(msg('preview failed')); });
     return col;
@@ -580,6 +651,7 @@ export function makeFilesTile(id) {
     const entries = lists[chain.length - 1].entries || [];
     const cursorEntry = entries.find((e) => e.name === state.cursor) || null;
     if (!cursorEntry) state.cursor = null;
+    else cursorMemory.set(state.dir, cursorEntry.name);
     previewName = cursorEntry && cursorEntry.type !== 'dir' ? cursorEntry.name : null;
     rightmostDir = cursorEntry?.type === 'dir'
       ? fsJoin(state.dir, cursorEntry.name)
@@ -603,6 +675,7 @@ export function makeFilesTile(id) {
     const animate = patchCols(colEls);
     if (tile.labelEl) tile.labelEl.textContent = tile.label();
     saveWidgets();
+    syncWatchers();
     requestAnimationFrame(() => {
       if (animate) smoothScrollRight();
       else colsEl.scrollLeft = colsEl.scrollWidth; // first render: jump straight there
@@ -704,6 +777,65 @@ export function makeFilesTile(id) {
     }
   }
 
+  // Live listings: one server-sent-events stream per watched directory —
+  // the cursor's directory and, when the cursor is on a folder, that folder
+  // (the deepest listing shown). A change drops that directory's cache
+  // entry and re-renders. Directories whose listing failed aren't watched
+  // (the server would only report them gone again); `gone` closes the
+  // stream so EventSource doesn't keep reconnecting to a deleted path.
+  const watchers = new Map(); // dir -> EventSource
+  let watchRefresh = 0;
+  function syncWatchers() {
+    const want = new Set([state.dir, rightmostDir].filter((d) => d && !listCache.get(d)?.data?.error));
+    for (const [dir, es] of watchers) {
+      if (!want.has(dir)) { es.close(); watchers.delete(dir); }
+    }
+    for (const dir of want) {
+      if (watchers.has(dir)) continue;
+      const es = new EventSource(`${API}/api/fs/watch?path=${encodeURIComponent(dir)}`);
+      let opened = false;
+      es.addEventListener('open', () => {
+        if (opened) changed(dir); // reconnected after a tunnel blip: events may have been missed
+        opened = true;
+      });
+      es.addEventListener('change', () => changed(dir));
+      es.addEventListener('gone', () => { es.close(); watchers.delete(dir); changed(dir); });
+      es.addEventListener('error', () => {
+        // A CLOSED stream won't retry on its own; forget it so the next
+        // render can open a fresh one. CONNECTING is a retry in progress.
+        if (es.readyState === EventSource.CLOSED) watchers.delete(dir);
+      });
+      watchers.set(dir, es);
+    }
+  }
+  function changed(dir) {
+    listCache.delete(dir);
+    if (colsEl.querySelector('.files-rename')) return; // don't yank the input mid-rename
+    clearTimeout(watchRefresh);
+    watchRefresh = setTimeout(rerender, 50);
+  }
+
+  // The pane regaining focus (a click into it, ⌘-navigation onto it, the
+  // app returning to the foreground) re-lists every column shown: parents
+  // too, not only the cursor's directory. Cache entries fetched in the last
+  // second are kept, so the focus that follows the first render doesn't
+  // list everything twice.
+  function refreshAll() {
+    if (!root.isConnected || !tile.opened) return;
+    const now = Date.now();
+    for (const [dir, hit] of listCache) {
+      if (now - hit.t > 1000) listCache.delete(dir);
+    }
+    if (colsEl.querySelector('.files-rename')) return;
+    rerender();
+  }
+  root.addEventListener('focusin', (ev) => {
+    if (root.contains(ev.relatedTarget)) return; // focus moved within the pane (rename input, modal, buttons)
+    refreshAll();
+  });
+  const onWindowFocus = () => { if (root.contains(document.activeElement)) refreshAll(); };
+  window.addEventListener('focus', onWindowFocus);
+
   enableDrop(colsEl, () => rightmostDir || state.dir);
 
   colsEl.addEventListener('paste', (ev) => {
@@ -736,7 +868,9 @@ export function makeFilesTile(id) {
       if (cur?.type !== 'dir') return;
       ev.preventDefault();
       state.dir = fsJoin(state.dir, cur.name);
-      state.cursor = ((await list(state.dir)).entries || [])[0]?.name ?? null;
+      const sub = (await list(state.dir)).entries || [];
+      const remembered = cursorMemory.get(state.dir);
+      state.cursor = (sub.find((e) => e.name === remembered) || sub[0])?.name ?? null;
       rerender();
     } else if (ev.key === 'ArrowLeft' || ev.key === 'h') {
       if (state.dir === '/') return;
@@ -764,6 +898,11 @@ export function makeFilesTile(id) {
     label: () => previewName || fsBase(state.dir),
     focus() { colsEl.focus({ preventScroll: true }); }, // app.js animates the strip itself
     fitAndReport() {}, // no terminal geometry to report
+    dispose() { // pane closed: drop the watch streams and the window listener
+      window.removeEventListener('focus', onWindowFocus);
+      for (const es of watchers.values()) es.close();
+      watchers.clear();
+    },
     openIfNeeded() {
       if (!root.isConnected) return;
       if (this.opened) {

@@ -212,9 +212,16 @@ make room for the vim keys. Other pointers:
 Panes aren't limited to terminals: **+ Files** opens a Finder-style
 Miller-columns file browser pane (one column per directory level, rooted at
 `/`, starting in `$HOME`). Click to drill down, or navigate with the arrow
-keys / `hjkl` like yazi. Selecting a file shows a preview column — text
-(first 64 KB), images, or size/mtime for binaries — via `GET /api/fs/list`,
-`/api/fs/preview`, and `/api/fs/raw`. Markdown files render by default
+keys / `hjkl` like yazi; drilling back into a directory visited earlier in
+the session re-selects the entry the cursor was on there. Columns size
+themselves to their longest name (200–420 px). Selecting a file shows a
+preview column — text (first 64 KB), images, a zip's table of contents
+(read from the central directory, nothing inflated), or just size/mtime in
+a narrow column for binaries — via `GET /api/fs/list`, `/api/fs/preview`,
+and `/api/fs/raw`. Listings stay live: the cursor's directory and the
+folder it points at are watched (`GET /api/fs/watch`, a server-sent-events
+stream over `fs.watch`) and re-list on change, and a pane regaining focus
+re-lists every column shown. Markdown files render by default
 (client-side, via `marked`, with raw HTML shown as text) with a Rendered /
 Source toggle in the preview header; relative images load through
 `/api/fs/raw`, web links open in the browser (shift-click copies), and
@@ -227,8 +234,8 @@ recreate their directory tree (empty subdirectories are skipped). Files or
 images pasted while the browser is focused upload into the rightmost
 directory shown (`POST /api/fs/upload`, colliding names deduped
 Finder-style). The selected entry can be renamed (`r`/`F2`, inline,
-`POST /api/fs/rename`) or deleted (`d`/`Delete`, after a confirmation —
-directories recursively; `POST /api/fs/delete`), via keyboard or the ✎/✕
+`POST /api/fs/rename`) or deleted (`d`/`Delete`, after a confirmation
+centred in the pane — directories recursively; `POST /api/fs/delete`), via keyboard or the ✎/✕
 buttons on the row. Browser panes are client-side widgets (no server
 session) implemented in `electron/ui/files-widget.js`; their path and
 cursor persist in localStorage alongside the layout, and they move around

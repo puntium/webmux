@@ -342,6 +342,9 @@ function initPasteDir(dir) {
 const HOME = process.env.HOME || os.homedir();
 const FS_LIST_MAX = 2000;
 const TEXT_PREVIEW_BYTES = 64 * 1024;
+const ZIP_LIST_MAX = 2000;
+const ZIP_CDIR_MAX = 16 * 1024 * 1024; // central directory read cap
+const ZIP_EXTS = new Set(['zip', 'jar', 'war', 'ear', 'whl', 'egg', 'epub', 'xpi', 'apk', 'ipa', 'nupkg', 'vsix', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp']);
 const IMAGE_MIME = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
   webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon',
@@ -378,6 +381,71 @@ route('GET', '/api/fs/list', (_req, res, url) => {
   });
 });
 
+// Zip table of contents straight from the central directory (no
+// dependency, nothing is inflated): the end-of-central-directory record is
+// found by scanning back from the tail, its zip64 variant is honoured, and
+// each central header yields { name, size, dir }. Entries are listed in
+// archive order and capped at ZIP_LIST_MAX. Throws on anything that isn't a
+// zip; the caller falls back to the binary verdict.
+function readZipListing(fd, fileSize) {
+  const readAt = (pos, len) => {
+    const buf = Buffer.alloc(len);
+    const n = fs.readSync(fd, buf, 0, len, pos);
+    return n === len ? buf : buf.subarray(0, n);
+  };
+  // EOCD: 22 bytes + up to 64 KB of archive comment.
+  const tailLen = Math.min(fileSize, 22 + 0xffff);
+  const tail = readAt(fileSize - tailLen, tailLen);
+  let eocd = -1;
+  for (let i = tail.length - 22; i >= 0; i--) {
+    if (tail.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('not a zip');
+  let count = tail.readUInt16LE(eocd + 10);
+  let cdSize = tail.readUInt32LE(eocd + 12);
+  let cdOffset = tail.readUInt32LE(eocd + 16);
+  if (count === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) {
+    // zip64: a locator sits right before the EOCD and points at the real record.
+    const loc = eocd - 20;
+    if (loc >= 0 && tail.readUInt32LE(loc) === 0x07064b50) {
+      const rec = readAt(Number(tail.readBigUInt64LE(loc + 8)), 56);
+      if (rec.length === 56 && rec.readUInt32LE(0) === 0x06064b50) {
+        count = Number(rec.readBigUInt64LE(32));
+        cdSize = Number(rec.readBigUInt64LE(40));
+        cdOffset = Number(rec.readBigUInt64LE(48));
+      }
+    }
+  }
+  if (cdOffset + cdSize > fileSize) throw new Error('not a zip');
+  const cd = readAt(cdOffset, Math.min(cdSize, ZIP_CDIR_MAX));
+  const entries = [];
+  let p = 0;
+  let seen = 0;
+  while (p + 46 <= cd.length && cd.readUInt32LE(p) === 0x02014b50) {
+    const nameLen = cd.readUInt16LE(p + 28);
+    const extraLen = cd.readUInt16LE(p + 30);
+    const commentLen = cd.readUInt16LE(p + 32);
+    if (p + 46 + nameLen + extraLen + commentLen > cd.length) break;
+    let size = cd.readUInt32LE(p + 24);
+    const utf8 = (cd.readUInt16LE(p + 8) & 0x800) !== 0;
+    const name = cd.toString(utf8 ? 'utf8' : 'latin1', p + 46, p + 46 + nameLen);
+    if (size === 0xffffffff) { // zip64 extra field: uncompressed size comes first
+      let q = p + 46 + nameLen;
+      const end = q + extraLen;
+      while (q + 4 <= end) {
+        const tag = cd.readUInt16LE(q);
+        const len = cd.readUInt16LE(q + 2);
+        if (tag === 0x0001 && len >= 8) { size = Number(cd.readBigUInt64LE(q + 4)); break; }
+        q += 4 + len;
+      }
+    }
+    seen++;
+    if (entries.length < ZIP_LIST_MAX) entries.push({ name, size, dir: name.endsWith('/') });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return { entries, count: Math.max(count, seen), truncated: seen < count || entries.length < seen };
+}
+
 route('GET', '/api/fs/preview', (_req, res, url) => {
   const file = resolveFsPath(url.searchParams.get('path'));
   let st;
@@ -385,10 +453,23 @@ route('GET', '/api/fs/preview', (_req, res, url) => {
   catch (err) { return sendJson(res, 400, { error: err.code || String(err) }); }
   const base = { size: st.size, mtime: st.mtimeMs };
   if (!st.isFile()) return sendJson(res, 200, { kind: 'other', ...base });
-  if (IMAGE_MIME[path.extname(file).slice(1).toLowerCase()]) {
+  const ext = path.extname(file).slice(1).toLowerCase();
+  if (IMAGE_MIME[ext]) {
     return sendJson(res, 200, { kind: 'image', ...base });
   }
   let fd;
+  if (ZIP_EXTS.has(ext) && st.size >= 22) {
+    try {
+      fd = fs.openSync(file, 'r');
+      return sendJson(res, 200, { kind: 'zip', ...readZipListing(fd, st.size), ...base });
+    } catch (err) {
+      if (err.code) return sendJson(res, 400, { error: err.code });
+      // not actually a zip — fall through to the text/binary sniff
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+      fd = undefined;
+    }
+  }
   try {
     fd = fs.openSync(file, 'r');
     const buf = Buffer.alloc(Math.min(st.size, TEXT_PREVIEW_BYTES));
@@ -401,6 +482,64 @@ route('GET', '/api/fs/preview', (_req, res, url) => {
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
   }
+});
+
+// Directory watch for the file browser: a Server-Sent Events stream that
+// emits `change` whenever anything in ?path (direct children only, that is
+// what fs.watch reports) is created, removed, renamed or written. Bursts
+// are coalesced (~100 ms); a comment line every 25 s keeps the ssh tunnel
+// from idling the connection out. The client re-lists on every event —
+// there is no payload — and EventSource reconnects on its own if the tunnel
+// blinks. Watching a directory that vanishes ends the stream with an
+// `gone` event, which the client treats as one more change.
+const WATCH_HEARTBEAT_MS = 25000;
+route('GET', '/api/fs/watch', (req, res, url) => {
+  const dir = resolveFsPath(url.searchParams.get('path'));
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    ...CORS,
+  });
+  res.flushHeaders?.();
+  const emit = (event, data) => { if (!res.destroyed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+  let watcher = null;
+  let pending = null;
+  const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': ping\n\n'); }, WATCH_HEARTBEAT_MS);
+  const stop = () => {
+    clearInterval(heartbeat);
+    clearTimeout(pending);
+    if (watcher) { try { watcher.close(); } catch { /* already closed */ } }
+    watcher = null;
+  };
+  try {
+    watcher = fs.watch(dir, { persistent: false }, () => {
+      if (pending) return;
+      pending = setTimeout(() => {
+        pending = null;
+        // inotify goes quiet, not erroring, when the watched directory
+        // itself is removed — check on every burst so the stream ends.
+        if (!fs.existsSync(dir)) {
+          emit('gone', { path: dir, error: 'ENOENT' });
+          stop();
+          return res.end();
+        }
+        emit('change', { path: dir });
+      }, 100);
+    });
+    watcher.on('error', (err) => {
+      emit('gone', { path: dir, error: err.code || String(err) });
+      stop();
+      res.end();
+    });
+    emit('ready', { path: dir });
+  } catch (err) {
+    emit('gone', { path: dir, error: err.code || String(err) });
+    stop();
+    return res.end();
+  }
+  req.on('close', stop);
+  res.on('close', stop);
 });
 
 // Upload from the file browser (drag-drop / paste): raw body written into

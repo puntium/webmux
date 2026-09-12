@@ -1327,6 +1327,7 @@ async function removeTile(sessionId, killServerSession) {
     : null;
   await animateRemoval(sessionId); // the terminal keeps painting while it shrinks
   tile.term?.dispose();
+  tile.dispose?.(); // files tiles: watch streams + window listeners
   tile.root.remove();
   await kill;
   discardWidgetState(sessionId);

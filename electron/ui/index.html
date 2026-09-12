@@ -338,6 +338,7 @@
     .term-holder { flex: 1; min-height: 0; padding: 4px; }
     .term-holder .xterm { height: 100%; }
     /* File browser widget (Miller columns) */
+    .files-tile { position: relative; } /* hosts the pane-scoped confirm modal */
     .files-cols {
       flex: 1;
       display: flex;
@@ -350,7 +351,7 @@
     .files-col {
       position: relative; /* makes row offsetTop column-relative (cursor reveal) */
       flex: none;
-      width: 200px;
+      width: 200px; /* listings set an inline width fitted to their names (files-widget.js colWidth) */
       overflow-y: auto;
       overflow-x: hidden;
       border-right: 1px solid var(--border);
@@ -403,9 +404,9 @@
     .files-msg { padding: 6px 10px; opacity: 0.5; font-size: 12px; font-style: italic; }
     /* Column enter/leave: new columns grow out of their parent while removed
        ones collapse, so navigation slides instead of jumping. The implicit
-       keyframe endpoint picks up each column's own width (200px listing,
-       600px preview). .leaving must come after .entering so it wins when a
-       column is recycled mid-animation. */
+       keyframe endpoint picks up each column's own width (the listing's
+       fitted inline width, 600px / 280px preview). .leaving must come after
+       .entering so it wins when a column is recycled mid-animation. */
     .files-col.entering { animation: files-col-in 180ms ease-out; }
     .files-col.leaving {
       animation: files-col-out 180ms ease-in forwards;
@@ -427,8 +428,13 @@
       background: var(--accent-tint-faint);
     }
     /* Wide enough for 80 cols of the 11.5px mono preview (80 × 6.9px = 552px)
-       plus body padding, scrollbar, and a little buffer. */
-    .files-preview { width: 600px; padding: 0; }
+       plus body padding, scrollbar, and a little buffer. With nothing to
+       show but the stat header (binary files, sockets) it narrows, easing
+       between the two when the cursor moves from one kind of file to the
+       other. */
+    .files-preview { width: 600px; padding: 0; transition: width 180ms ease-out; }
+    .files-preview.narrow { width: 280px; }
+    @media (prefers-reduced-motion: reduce) { .files-preview { transition: none; } }
     .files-preview-inner {
       display: flex;
       flex-direction: column;
@@ -495,6 +501,17 @@
       white-space: pre;
     }
     .files-preview-body img { max-width: 100%; display: block; }
+    /* Zip table of contents: member path, uncompressed size at the right. */
+    .files-zip { font-family: 'JetBrainsMono Nerd Font', monospace; font-size: 11.5px; line-height: 1.45; }
+    .files-zip-entry { display: flex; gap: 12px; align-items: baseline; padding: 1px 0; }
+    .files-zip-entry.dir .files-zip-name { opacity: 0.7; }
+    .files-zip-name { flex: 1; min-width: 0; word-break: break-all; }
+    .files-zip-size { flex: none; opacity: 0.6; font-variant-numeric: tabular-nums; }
+    /* Delete confirmation, centred over the file browser pane rather than
+       the window: the overlay is absolute within .files-tile. */
+    .files-tile > .files-modal-overlay { position: absolute; z-index: 5; } /* outranks .modal-overlay's fixed */
+    .files-confirm { max-width: calc(100% - 32px); }
+    .files-confirm-text { font-size: 13px; word-break: break-word; margin-bottom: 14px; }
     /* Rendered markdown: compact document typography on the UI font, code
        in the terminal's mono face. */
     .files-md { font-size: 13px; line-height: 1.5; word-wrap: break-word; }
