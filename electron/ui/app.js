@@ -1182,14 +1182,11 @@ function animateStrip(before) {
     if (body) {
       body.el.style.width = `${body.rect.width}px`;
       body.el.style.flex = `0 0 ${body.rect.height}px`;
-      // The unfocused-fade overlay anchors to the body; unanchored, it
-      // covers the whole animating box, so the part of a shrinking box
-      // its (final-size) content no longer fills dims like the rest.
-      body.el.style.position = 'static';
     }
     let zIndex = 1; // dividers
     if (body) zIndex = el.dataset.id === focusedKey ? 3 : 2;
     Object.assign(el.style, { position: 'absolute', margin: '0', zIndex });
+    el.classList.add('in-flight'); // a shrinking box's uncovered part takes the body's dimmed shade
     els.push(el);
     anims.push(el.animate([box(from), box(to)], opts));
     if (fresh && body) anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], opts));
@@ -1234,9 +1231,11 @@ function settleStrip() {
   for (const a of anims) a.cancel();
   for (const el of els) {
     for (const p of ['position', 'left', 'top', 'width', 'height', 'margin', 'z-index']) el.style.removeProperty(p);
+    el.classList.remove('in-flight');
     const body = el.querySelector(':scope > .pane-body');
     if (body) {
-      for (const p of ['width', 'flex', 'position']) body.style.removeProperty(p);
+      body.style.removeProperty('width');
+      body.style.removeProperty('flex');
     }
   }
   if (!chase) extentKeeper?.remove();

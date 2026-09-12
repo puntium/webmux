@@ -1,6 +1,6 @@
 {
   "name": "webmux-client",
-  "version": "0.19.2",
+  "version": "0.19.3",
   "private": true,
   "description": "macOS Electron client for webmux, connected over a supervised SSH tunnel",
   "main": "main.js",

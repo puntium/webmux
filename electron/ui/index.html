@@ -315,6 +315,18 @@
     :root[data-unfocus-fade] .pane:not(.focused) .pane-body::after {
       opacity: calc(0.7 * var(--unfocus-fade));
     }
+    /* While a layout animation has a pane's box in flight (app.js
+       animateStrip) its body is pinned at its final size, so a shrinking
+       box shows some of the pane's own background beside or below the
+       body. Darken that bare part exactly as the overlay darkens the body:
+       a shadow of the body, spread wide and pushed down by the same amount
+       so its top edge is the body's, painted inside the body's opacity
+       group like the overlay is. It stops at the body's top, so the bar
+       above — translucent, so any tint under it would show through — keeps
+       its colour; the pane's overflow clips the rest. */
+    :root[data-unfocus-fade] .pane.in-flight:not(.focused) .pane-body {
+      box-shadow: 0 9999px 0 9999px rgba(0, 0, 0, calc(0.7 * var(--unfocus-fade)));
+    }
     .tile {
       flex: 1;
       display: flex;
