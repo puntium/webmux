@@ -82,6 +82,9 @@ function apply(next) {
   // 0 = no fade at all; 40 reproduces the original brightness(0.72)/opacity
   // 0.85 look; 100 leaves unfocused panes clearly muted but still readable.
   root.style.setProperty('--unfocus-fade', String(settings.unfocusedFade / 100));
+  // The fade rules in index.html only exist while this attribute is set,
+  // so 0% costs nothing at all rather than a no-op overlay.
+  root.toggleAttribute('data-unfocus-fade', settings.unfocusedFade > 0);
   for (const fn of listeners) fn(settings);
 }
 

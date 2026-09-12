@@ -679,6 +679,25 @@ function makeTile(sessionId) {
       this.term = term;
       this.fit = fit;
 
+      // GPU rendering: xterm's default DOM renderer rebuilds row elements
+      // on every repaint, which is the main-thread cost that shows with
+      // several visible splits (and several hosts). The WebGL addon draws
+      // from a glyph atlas instead; it must load after open(). Chromium
+      // caps live WebGL contexts per process (16) and evicts the oldest
+      // past that, and the GPU process can drop contexts on its own — in
+      // either case dispose the addon and xterm falls back to the DOM
+      // renderer for that terminal, which is exactly the status quo.
+      try {
+        const webgl = new WebglAddon.WebglAddon();
+        webgl.onContextLoss(() => {
+          logWarn('webgl context lost — terminal falls back to the DOM renderer', { session: sessionId });
+          webgl.dispose();
+        });
+        term.loadAddon(webgl);
+      } catch (err) {
+        logWarn('webgl renderer unavailable — using the DOM renderer', { session: sessionId, error: String(err.message || err) });
+      }
+
       // Manual scroll stickiness: xterm follows new output only when the
       // viewport sits *exactly* on the last line, so a scroll that lands a
       // hair short leaves the terminal silently unstuck. Instead, keep a

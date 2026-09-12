@@ -959,6 +959,7 @@ const VENDOR_DIRS = {
   xterm: path.join(__dirname, 'node_modules', '@xterm', 'xterm'),
   'addon-fit': path.join(__dirname, 'node_modules', '@xterm', 'addon-fit'),
   'addon-web-links': path.join(__dirname, 'node_modules', '@xterm', 'addon-web-links'),
+  'addon-webgl': path.join(__dirname, 'node_modules', '@xterm', 'addon-webgl'),
   marked: path.join(__dirname, 'node_modules', 'marked'), // file-browser markdown preview
 };
 
