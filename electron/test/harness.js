@@ -22,6 +22,7 @@ const sent = [];
 const revealed = [];
 const loads = [];
 let appScheme = null; // the webmux:// protocol handler
+let willDownload = null; // main's will-download hook
 
 class FakeWebContents {
   constructor() { this.url = ''; }
@@ -34,7 +35,7 @@ class FakeWebContents {
   setWindowOpenHandler() {}
 }
 class FakeWebContentsView {
-  constructor() { this.webContents = new FakeWebContents(); }
+  constructor() { this.webContents = new FakeWebContents(); FakeWebContentsView.last = this; }
   setBounds() {}
   setVisible() {}
 }
@@ -77,7 +78,7 @@ const stub = {
   Menu: { setApplicationMenu: () => {}, buildFromTemplate: (t) => t },
   shell: { openExternal: () => {}, openPath: () => {}, showItemInFolder: (p) => { revealed.push(p); } },
   powerMonitor: { on: () => {} },
-  session: { defaultSession: { on: () => {} } }, // will-download logging hook
+  session: { defaultSession: { on: (ev, fn) => { if (ev === 'will-download') willDownload = fn; } } },
   ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } },
   protocol: { registerSchemesAsPrivileged: () => {}, handle: (_scheme, fn) => { appScheme = fn; } },
   net: { fetch: () => Promise.reject(new Error('no net in tests')) },
@@ -227,6 +228,50 @@ const connState = async (name) =>
   st = await connState('bad');
   assert.strictEqual(st.state, 'failed', 'no auto-retry after a never-connected failure');
   console.log('failed-parks ok  (stderr: ' + st.stderr.split('\n')[0] + ')');
+
+  // -- downloads remember their folder per profile -------------------------
+  // The 'bad' profile has a live (failed) connection with a view; a download
+  // from that view's page seeds the save dialog with the profile's last
+  // folder and records where the file actually landed.
+  {
+    const wc = FakeWebContentsView.last.webContents;
+    const fakeItem = (savePath) => {
+      const it = { opts: null, doneFn: null };
+      it.getFilename = () => path.basename(savePath);
+      it.getTotalBytes = () => 12;
+      it.getSavePath = () => savePath;
+      it.setSaveDialogOptions = (o) => { it.opts = o; };
+      it.once = (ev, fn) => { if (ev === 'done') it.doneFn = fn; };
+      return it;
+    };
+    assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').downloadDir, '', 'no folder remembered yet');
+    const dlDir = path.join(scratch, 'downloads');
+    fs.mkdirSync(dlDir, { recursive: true });
+    let it = fakeItem(path.join(dlDir, 'a.txt'));
+    willDownload(null, it, wc);
+    assert.strictEqual(it.opts, null, 'first download: no default path');
+    it.doneFn(null, 'completed');
+    assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').downloadDir, dlDir, 'completed download records its folder');
+    it = fakeItem(path.join(scratch, 'elsewhere', 'b.txt'));
+    willDownload(null, it, wc);
+    assert.deepStrictEqual(it.opts, { defaultPath: path.join(dlDir, 'b.txt') }, 'next download opens in the remembered folder');
+    it.doneFn(null, 'cancelled');
+    assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').downloadDir, dlDir, 'a cancelled download changes nothing');
+    fs.rmSync(dlDir, { recursive: true });
+    it = fakeItem(path.join(scratch, 'c.txt'));
+    willDownload(null, it, wc);
+    assert.strictEqual(it.opts, null, 'a remembered folder that no longer exists is not offered');
+    // profiles:save from the connect form (which never sends downloadDir) keeps it
+    r = await handlers['profiles:save'](null, { name: 'bad', host: 'nobody@webmux-test.invalid' }, 'bad');
+    assert.ok(r.ok);
+    assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').downloadDir, dlDir, 'editing the profile keeps the remembered folder');
+    // a download from an unknown page (no connection) is logged but remembers nothing
+    it = fakeItem(path.join(scratch, 'd.txt'));
+    willDownload(null, it, new FakeWebContents());
+    it.doneFn(null, 'completed');
+    assert.strictEqual(readStore().profiles.find((p) => p.name === 'bad').downloadDir, dlDir, 'unattributed download leaves profiles alone');
+    console.log('download-dir ok');
+  }
 
   // -- connection log: main's own events ---------------------------------
   let lg = await handlers['log:get'](null, 0);

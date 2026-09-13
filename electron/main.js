@@ -68,6 +68,10 @@ const PROFILE_DEFAULTS = {
   localPort: 0, // 0 = auto-pick per app run (the page's origin no longer depends on it)
   extraOptions: '', // extra ssh args, whitespace-separated
   passwordEnc: '', // safeStorage ciphertext, base64; never leaves main
+  // Where this profile's last file-browser download was saved: the next
+  // save dialog opens there. Remembered by the download hook, not a form
+  // field — profiles:save carries it over like the password.
+  downloadDir: '',
 };
 
 const configFile = () => path.join(app.getPath('userData'), 'config.json');
@@ -826,6 +830,7 @@ function registerIpc() {
     // explicit clear flag removes it. Stored only as safeStorage ciphertext.
     const existing = findProfile(originalName || p.name);
     p.passwordEnc = clearPassword ? '' : (existing ? existing.passwordEnc : '');
+    p.downloadDir = typeof fields.downloadDir === 'string' ? fields.downloadDir : (existing?.downloadDir || '');
     if (password) {
       if (!safeStorage.isEncryptionAvailable()) {
         return { error: 'OS keychain encryption is unavailable — cannot store a password' };
@@ -1123,19 +1128,37 @@ function registerAppScheme() {
 
 // File-browser downloads (a ⤓ click in a preview header) go through
 // Chromium's normal download path: no save path is set here, so it prompts
-// a save dialog. This only narrates start and outcome to the connection log
+// a save dialog. The dialog opens in the folder the same profile last saved
+// to (profile.downloadDir, updated on every completed download — each host
+// keeps its own), and start and outcome are narrated to the connection log
 // of whichever host page the download came from.
 function watchDownloads() {
   session.defaultSession.on('will-download', (_ev, item, wc) => {
     const conn = [...conns.values()].find((c) => c.view.webContents === wc);
     const name = conn ? conn.name : null;
     const file = item.getFilename();
+    const lastDir = conn && findProfile(conn.name)?.downloadDir;
+    if (lastDir && isDirectory(lastDir)) {
+      item.setSaveDialogOptions({ defaultPath: path.join(lastDir, file) });
+    }
     log.info(name, 'download started', { file, bytes: item.getTotalBytes() });
     item.once('done', (_e, state) => {
-      if (state === 'completed') log.info(name, 'download saved', { file, path: item.getSavePath() });
-      else log.warn(name, `download ${state}`, { file }); // 'cancelled' | 'interrupted'
+      if (state !== 'completed') return log.warn(name, `download ${state}`, { file }); // 'cancelled' | 'interrupted'
+      const saved = item.getSavePath();
+      log.info(name, 'download saved', { file, path: saved });
+      // conn.name follows renames; the profile may be gone if it was deleted mid-download.
+      const profile = conn && saved ? findProfile(conn.name) : null;
+      const dir = saved ? path.dirname(saved) : '';
+      if (profile && dir && profile.downloadDir !== dir) {
+        profile.downloadDir = dir;
+        saveStore();
+      }
     });
   });
+}
+
+function isDirectory(p) {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }
 
 // ---------------------------------------------------------------------------

@@ -106,7 +106,10 @@ A self-contained npm package so the server install never pulls Electron.
   - **Profiles** at `<userData>/config.json` (`~/Library/Application
     Support/webmux/config.json` on macOS): `{ profiles: [{ name, host,
     sshPort, identityFile, instance, localPort, extraOptions,
-    passwordEnc }], lastProfile }`. The pre-profiles single-host shape is
+    passwordEnc, downloadDir }], lastProfile }` — `downloadDir` is where
+    the profile's last file-browser download was saved (the next save
+    dialog for that host opens there); the download hook maintains it,
+    the connect form never shows it. The pre-profiles single-host shape is
     migrated on first load; the pre-unix-socket `remotePort` field is
     dropped, a legacy bare-name `remoteSocket` becomes the `instance`
     field (an absolute-path one falls back to `default`), and the
