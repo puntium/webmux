@@ -370,6 +370,16 @@
     .files-entry:hover { background: var(--hover); }
     .files-entry.on-path { background: var(--raise-strong); }
     .files-entry.cursor { background: var(--selection-bg); color: var(--selection-fg); }
+    /* Drilled preview (→ on a file, or a click in the preview): the selection
+       highlight moves from the cursor row to the preview header, the row
+       keeps the on-path look of any other ancestor, and ↑/↓ scroll the
+       content. */
+    .files-cols.drilled .files-entry.cursor { background: var(--raise-strong); color: inherit; }
+    .files-cols.drilled .files-preview .files-preview-head {
+      background: var(--selection-bg);
+      color: var(--selection-fg);
+    }
+    .files-cols.drilled .files-preview .files-preview-head .fmeta { opacity: 0.75; }
     .files-entry.hidden-file .files-name { opacity: 0.55; }
     .files-name {
       flex: 1;
@@ -501,12 +511,15 @@
       white-space: pre;
     }
     .files-preview-body img { max-width: 100%; display: block; }
-    /* Zip table of contents: member path, uncompressed size at the right. */
+    /* Zip table of contents as a tree: connector prefix, member name,
+       uncompressed size at the right. The prefix keeps its spaces and never
+       wraps so the ├──/│ columns line up down the listing. */
     .files-zip { font-family: 'JetBrainsMono Nerd Font', monospace; font-size: 11.5px; line-height: 1.45; }
-    .files-zip-entry { display: flex; gap: 12px; align-items: baseline; padding: 1px 0; }
+    .files-zip-entry { display: flex; align-items: baseline; padding: 1px 0; }
     .files-zip-entry.dir .files-zip-name { opacity: 0.7; }
+    .files-zip-tree { flex: none; white-space: pre; opacity: 0.4; }
     .files-zip-name { flex: 1; min-width: 0; word-break: break-all; }
-    .files-zip-size { flex: none; opacity: 0.6; font-variant-numeric: tabular-nums; }
+    .files-zip-size { flex: none; margin-left: 12px; opacity: 0.6; font-variant-numeric: tabular-nums; }
     /* Delete confirmation, centred over the file browser pane rather than
        the window: the overlay is absolute within .files-tile. */
     .files-tile > .files-modal-overlay { position: absolute; z-index: 5; } /* outranks .modal-overlay's fixed */

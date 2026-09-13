@@ -213,12 +213,17 @@ Panes aren't limited to terminals: **+ Files** opens a Finder-style
 Miller-columns file browser pane (one column per directory level, rooted at
 `/`, starting in `$HOME`). Click to drill down, or navigate with the arrow
 keys / `hjkl` like yazi; drilling back into a directory visited earlier in
-the session re-selects the entry the cursor was on there. Columns size
+the session re-selects the entry the cursor was on there. The pane's title
+bar shows the path to the selection (`$HOME` as `~`), collapsing parent
+directories to `…` before it would cut into the file name. Columns size
 themselves to their longest name (200–420 px). Selecting a file shows a
-preview column — text (first 64 KB), images, a zip's table of contents
-(read from the central directory, nothing inflated), or just size/mtime in
-a narrow column for binaries — via `GET /api/fs/list`, `/api/fs/preview`,
-and `/api/fs/raw`. Listings stay live: the cursor's directory and the
+preview column — text (first 64 KB), images, a zip's table of contents as
+a `tree`-style listing (read from the central directory, nothing
+inflated), or just size/mtime in a narrow column for binaries — via
+`GET /api/fs/list`, `/api/fs/preview`, and `/api/fs/raw`. `→` on a file
+drills into its preview: the header takes the selection highlight and
+`↑`/`↓` (PageUp/PageDown, Home/End) scroll the content; `←` steps back
+to the listing. Listings stay live: the cursor's directory and the
 folder it points at are watched (`GET /api/fs/watch`, a server-sent-events
 stream over `fs.watch`) and re-list on change, and a pane regaining focus
 re-lists every column shown. Markdown files render by default
@@ -226,7 +231,7 @@ re-lists every column shown. Markdown files render by default
 Source toggle in the preview header; relative images load through
 `/api/fs/raw`, web links open in the browser (shift-click copies), and
 relative links navigate the browser to that entry. The preview header's ⤓
-button downloads the file to the local machine (`/api/fs/raw?download=1`
+button (or `D`) downloads the file to the local machine (`/api/fs/raw?download=1`
 serves it as an attachment; the Electron client shows the usual save
 dialog and notes the outcome in the connection log). Files or folders dragged onto a column
 upload into that column's directory — multiple at once is fine, and folders

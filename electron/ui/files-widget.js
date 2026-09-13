@@ -4,17 +4,21 @@
    (never a server session id) and its state ({ dir, cursor }) persists in
    localStorage next to the layout. Columns show the ancestor chain of `dir`;
    the cursor entry gets one extra column — a listing for directories, a
-   preview (text/image/zip listing/stat) for files — markdown renders by
+   preview (text/image/zip tree/stat) for files — markdown renders by
    default, with a Rendered / Source toggle in the preview header, which
-   also has a ⤓ button that downloads the file (/api/fs/raw?download=1).
-   Listing columns size themselves to their longest name (within limits);
-   the preview column is wide for content and narrow when there is nothing
-   to show but the stat line. Arrows / hjkl navigate like yazi; drilling
-   back into a directory visited earlier in this session re-selects the
-   entry that was under the cursor there. r/F2 renames the selected entry
-   inline and d/Delete deletes it (after a confirm centred in the pane;
-   directories delete recursively) — both also have buttons on the selected
-   row. Files or folders dragged onto a column upload into that column's
+   also has a ⤓ button that downloads the file (/api/fs/raw?download=1);
+   D does the same from the keyboard. Listing columns size themselves to
+   their longest name (within limits); the preview column is wide for
+   content and narrow when there is nothing to show but the stat line.
+   Arrows / hjkl navigate like yazi; → on a file "drills" into its preview
+   (the header takes the selection highlight, ↑/↓ scroll the content, ←
+   steps back out); drilling back into a directory visited earlier in this
+   session re-selects the entry that was under the cursor there. The pane
+   title is the path to the selection, home abbreviated to ~ and parent
+   segments collapsed to … before the file name is ever cut. r/F2 renames
+   the selected entry inline and d/Delete deletes it (after a confirm
+   centred in the pane; directories delete recursively) — both also have
+   buttons on the selected row. Files or folders dragged onto a column upload into that column's
    directory (folders recreate their tree); files or images pasted while the
    widget is focused upload into the rightmost directory shown. Listings
    stay live: the cursor's directory (and the folder it points at) are
@@ -81,6 +85,63 @@ const fsChain = (dir) => { // '/a/b' -> ['/', '/a', '/a/b']
 };
 
 const isMarkdownName = (name) => /\.(md|markdown|mdown|mkd)$/i.test(name);
+
+// The server's home directory (what '~' resolves to), learned once per page
+// from the listing of '~' and used to abbreviate title paths. Left unknown
+// (no abbreviation) while the API is unreachable; the next pane open retries.
+let homeDir = null;
+let homePromise = null;
+const learnHome = () => homePromise ||= fetch(`${API}/api/fs/list?path=~`)
+  .then((r) => r.json())
+  .then((d) => { homeDir = d.path && d.path !== '/' ? d.path : null; })
+  .catch(() => { homePromise = null; });
+const tildePath = (p) => (homeDir && (p === homeDir || p.startsWith(homeDir + '/'))
+  ? '~' + p.slice(homeDir.length)
+  : p);
+
+let measureCtx = null;
+function textWidth(text, font) {
+  measureCtx ||= document.createElement('canvas').getContext('2d');
+  measureCtx.font = font;
+  return measureCtx.measureText(text).width;
+}
+
+// Shorten a display path to `maxWidth` (as measured by `measure`) while
+// keeping its last segment whole for as long as possible: interior
+// directories collapse into one '…' starting next to the anchor ('~' or the
+// root), then the anchor goes, then only the name is left (the label's own
+// text-overflow takes it from there).
+//   ~/src/webmux/electron/ui/app.js → ~/…/electron/ui/app.js → ~/…/ui/app.js
+//   → ~/…/app.js → …/app.js → app.js
+function fitPath(display, maxWidth, measure) {
+  if (measure(display) <= maxWidth) return display;
+  const dirs = display.split('/');
+  const name = dirs.pop();
+  if (!name) return display; // '/' itself
+  for (let tail = dirs.length - 2; tail >= 0; tail--) {
+    const s = `${[dirs[0], '…', ...dirs.slice(dirs.length - tail)].join('/')}/${name}`;
+    if (measure(s) <= maxWidth) return s;
+  }
+  const s = `…/${name}`;
+  return measure(s) <= maxWidth ? s : name;
+}
+
+// Zip members as a tree: { name, dir, size, children: Map }. Directories
+// with no entry of their own are implied by their children's paths; a
+// member that has children is a directory whatever its own entry said.
+function zipTree(entries) {
+  const root = { children: new Map() };
+  for (const e of entries) {
+    let node = root;
+    for (const seg of e.name.split('/').filter(Boolean)) {
+      let next = node.children.get(seg);
+      if (!next) node.children.set(seg, next = { name: seg, dir: true, size: 0, children: new Map() });
+      node = next;
+    }
+    if (node !== root && !e.dir) { node.dir = false; node.size = e.size; }
+  }
+  return root;
+}
 
 // Resolve a relative link from a markdown file against that file's
 // directory; returns null for anything with a scheme (http:, mailto:, …).
@@ -398,12 +459,10 @@ export function makeFilesTile(id) {
   const COL_MIN = 200;
   const COL_MAX = 420;
   const COL_CHROME = 72;
-  let measureCtx = null;
   function colWidth(entries) {
-    measureCtx ||= document.createElement('canvas').getContext('2d');
-    measureCtx.font = `12.5px ${getComputedStyle(colsEl).fontFamily || 'sans-serif'}`;
+    const font = `12.5px ${getComputedStyle(colsEl).fontFamily || 'sans-serif'}`;
     let w = 0;
-    for (const e of entries) w = Math.max(w, measureCtx.measureText(e.name).width);
+    for (const e of entries) w = Math.max(w, textWidth(e.name, font));
     return Math.round(Math.max(COL_MIN, Math.min(COL_MAX, w + COL_CHROME)));
   }
 
@@ -458,6 +517,7 @@ export function makeFilesTile(id) {
       row.addEventListener('click', () => {
         state.dir = dirPath;
         state.cursor = e.name;
+        setDrilled(null); // the listing row takes the selection back
         rerender();
         colsEl.focus();
       });
@@ -465,6 +525,24 @@ export function makeFilesTile(id) {
     }
     if (data.truncated) col.appendChild(msg('(list truncated)'));
     return col;
+  }
+
+  // Download: a link to the raw bytes as an attachment. Same-origin (plain
+  // browser) the download attribute saves it directly; under the Electron
+  // client the API is another origin, so the click is a navigation that
+  // main.js lets through for exactly this URL shape — the attachment
+  // response then becomes a save dialog and the page stays put. The
+  // preview header's ⤓ is such a link; D builds and clicks a throwaway one.
+  const downloadHref = (filePath) => `${API}/api/fs/raw?path=${encodeURIComponent(filePath)}&download=1`;
+  function download(filePath) {
+    const a = document.createElement('a');
+    a.href = downloadHref(filePath);
+    a.download = fsBase(filePath);
+    a.hidden = true;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setStatus(`downloading ${fsBase(filePath)}`);
   }
 
   // Rendered-vs-source choice for markdown previews. Remembered while the
@@ -492,17 +570,12 @@ export function makeFilesTile(id) {
     ftext.append(fname, fmeta);
     head.appendChild(ftext);
 
-    // Download: a link to the raw bytes as an attachment. Same-origin (plain
-    // browser) the download attribute saves it directly; under the Electron
-    // client the API is another origin, so the click is a navigation that
-    // main.js lets through for exactly this URL shape — the attachment
-    // response then becomes a save dialog and the page stays put.
     if (info.kind !== 'other') {
       const dl = document.createElement('a');
       dl.className = 'files-act files-download';
-      dl.href = `${API}/api/fs/raw?path=${encodeURIComponent(filePath)}&download=1`;
+      dl.href = downloadHref(filePath);
       dl.download = fsBase(filePath);
-      dl.title = 'Download';
+      dl.title = 'Download (D)';
       dl.setAttribute('aria-label', `Download ${fsBase(filePath)}`);
       dl.textContent = '⤓';
       dl.addEventListener('click', () => {
@@ -578,23 +651,37 @@ export function makeFilesTile(id) {
     } else if (info.kind === 'text') {
       sourceView();
     } else if (info.kind === 'zip') {
-      // Table of contents in archive order, `unzip -l` style: one row per
-      // member with its uncompressed size; directory members show a
-      // trailing slash and no size.
+      // Table of contents as a `tree`-style listing: one row per member,
+      // nested under its parent with ├──/└── connectors instead of the full
+      // path repeated on every line; folders first, then by name; files
+      // carry their uncompressed size at the right.
       const listEl = document.createElement('div');
       listEl.className = 'files-zip';
-      for (const e of info.entries) {
-        const row = document.createElement('div');
-        row.className = 'files-zip-entry' + (e.dir ? ' dir' : '');
-        const nm = document.createElement('span');
-        nm.className = 'files-zip-name';
-        nm.textContent = e.name;
-        const sz = document.createElement('span');
-        sz.className = 'files-zip-size';
-        sz.textContent = e.dir ? '' : formatSize(e.size);
-        row.append(nm, sz);
-        listEl.appendChild(row);
-      }
+      const isDir = (n) => n.dir || n.children.size > 0;
+      const byName = (a, b) => (isDir(a) === isDir(b)
+        ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+        : isDir(a) ? -1 : 1);
+      const walk = (node, indent) => {
+        const kids = [...node.children.values()].sort(byName);
+        kids.forEach((kid, i) => {
+          const last = i === kids.length - 1;
+          const row = document.createElement('div');
+          row.className = 'files-zip-entry' + (isDir(kid) ? ' dir' : '');
+          const tree = document.createElement('span');
+          tree.className = 'files-zip-tree';
+          tree.textContent = indent + (last ? '└── ' : '├── ');
+          const nm = document.createElement('span');
+          nm.className = 'files-zip-name';
+          nm.textContent = kid.name + (isDir(kid) ? '/' : '');
+          const sz = document.createElement('span');
+          sz.className = 'files-zip-size';
+          sz.textContent = isDir(kid) ? '' : formatSize(kid.size);
+          row.append(tree, nm, sz);
+          listEl.appendChild(row);
+          walk(kid, indent + (last ? '    ' : '│   '));
+        });
+      };
+      walk(zipTree(info.entries), '');
       body.appendChild(listEl);
       if (!info.entries.length) body.appendChild(msg('(empty archive)'));
       if (info.truncated) body.appendChild(msg('(list truncated)'));
@@ -618,13 +705,25 @@ export function makeFilesTile(id) {
     // Fixed key: moving the cursor between files updates the one preview
     // column in place instead of tearing it down and growing a new one.
     col.dataset.key = 'preview';
+    col.dataset.path = filePath;
     enableDrop(col, () => fsParent(filePath));
     // Start at the width the preview column already has (narrow or wide)
     // and settle once the stat arrives, so stepping between files of a
     // kind doesn't flicker the column through the other width.
     const prev = colsEl.querySelector('.files-preview:not(.leaving)');
     col.classList.toggle('narrow', !!prev?.classList.contains('narrow'));
+    // A re-render of the same file (directory watch, focus refresh) keeps
+    // the reader's place in the content.
+    const keepScroll = prev?.dataset.path === filePath
+      ? prev.querySelector('.files-preview-body')?.scrollTop || 0
+      : 0;
     col.appendChild(msg('…'));
+    // Clicking the preview (not its buttons or links) drills into it, like →.
+    col.addEventListener('click', (ev) => {
+      if (ev.target.closest('a, button, input')) return;
+      if (col.classList.contains('narrow')) return;
+      setDrilled(filePath);
+    });
     fetch(`${API}/api/fs/preview?path=${encodeURIComponent(filePath)}`)
       .then((r) => r.json())
       .then((info) => {
@@ -633,15 +732,37 @@ export function makeFilesTile(id) {
         const resized = col.classList.contains('narrow') !== narrow;
         col.classList.toggle('narrow', narrow);
         col.replaceChildren(info.error ? msg(info.error) : previewContent(filePath, info));
+        if (keepScroll) {
+          const body = col.querySelector('.files-preview-body');
+          if (body) body.scrollTop = keepScroll;
+        }
+        if (narrow && drilled === filePath) setDrilled(null); // nothing to scroll
         if (resized) smoothScrollRight(); // follow the column's width transition
       })
       .catch(() => { if (g === gen) col.replaceChildren(msg('preview failed')); });
     return col;
   }
 
+  // "Drilled" preview: → on a file moves the selection into its preview
+  // column. The header takes the cursor highlight (the listing row drops to
+  // the on-path look), ↑/↓ PageUp/PageDown Home/End scroll the content and
+  // ←/Escape step back out. Memory only and bound to one file: the cursor
+  // moving anywhere else leaves it. The horizontal scroll follows the
+  // selection: drilling in brings the whole preview column on screen (its
+  // header buttons included, even if that pushes the listing off the left
+  // edge), leaving puts the cursor's column back in view.
+  let drilled = null; // path of the file whose preview holds the selection
+  function setDrilled(filePath) {
+    if (drilled === filePath) return;
+    drilled = filePath;
+    colsEl.classList.toggle('drilled', !!drilled);
+    smoothScrollRight();
+  }
+  const previewBody = () => colsEl.querySelector('.files-preview:not(.leaving) .files-preview-body');
+  const SCROLL_STEP = 48; // px per ↑/↓ — about three lines of the mono preview
+
   let gen = 0; // render generation, guards async results from stale renders
   let rightmostDir = null; // deepest directory column shown — the paste target
-  let previewName = null; // file under the cursor (preview showing) — names the pane
   async function rerender() {
     const g = ++gen;
     const chain = fsChain(state.dir);
@@ -652,7 +773,8 @@ export function makeFilesTile(id) {
     const cursorEntry = entries.find((e) => e.name === state.cursor) || null;
     if (!cursorEntry) state.cursor = null;
     else cursorMemory.set(state.dir, cursorEntry.name);
-    previewName = cursorEntry && cursorEntry.type !== 'dir' ? cursorEntry.name : null;
+    const previewPath = cursorEntry && cursorEntry.type !== 'dir' ? fsJoin(state.dir, cursorEntry.name) : null;
+    if (drilled && drilled !== previewPath) setDrilled(null);
     rightmostDir = cursorEntry?.type === 'dir'
       ? fsJoin(state.dir, cursorEntry.name)
       : state.dir;
@@ -669,11 +791,11 @@ export function makeFilesTile(id) {
       if (g !== gen) return;
       colEls.push(buildCol(rightmostDir, subList, null, false));
     } else if (cursorEntry) {
-      colEls.push(buildPreviewCol(fsJoin(state.dir, cursorEntry.name), g));
+      colEls.push(buildPreviewCol(previewPath, g));
     }
 
     const animate = patchCols(colEls);
-    if (tile.labelEl) tile.labelEl.textContent = tile.label();
+    fitLabel();
     saveWidgets();
     syncWatchers();
     requestAnimationFrame(() => {
@@ -733,7 +855,8 @@ export function makeFilesTile(id) {
 
   // Ease the horizontal scroll toward "rightmost column at the right edge",
   // re-reading the target every frame because column widths are animating
-  // underneath. The cursor's own column is never pushed off the left edge.
+  // underneath. The cursor's own column is never pushed off the left edge —
+  // unless the selection is in the preview, which then shows whole instead.
   // A wheel gesture cancels the chase so the user can take over mid-flight.
   let scrollAnim = 0;
   colsEl.addEventListener('wheel', () => cancelAnimationFrame(scrollAnim), { passive: true });
@@ -742,7 +865,7 @@ export function makeFilesTile(id) {
     if (!colsEl.isConnected) return;
     const target = () => {
       let t = colsEl.scrollWidth - colsEl.clientWidth;
-      const cursorCol = colsEl.querySelector('.files-entry.cursor')?.closest('.files-col');
+      const cursorCol = drilled ? null : colsEl.querySelector('.files-entry.cursor')?.closest('.files-col');
       if (cursorCol) {
         t = Math.min(t, colsEl.scrollLeft
           + cursorCol.getBoundingClientRect().left - colsEl.getBoundingClientRect().left);
@@ -849,9 +972,52 @@ export function makeFilesTile(id) {
     uploadTo(rightmostDir || state.dir, files);
   });
 
+  // Pane title: the path to the selection, home abbreviated to '~', fitted
+  // to the label's width by fitPath (parents collapse to '…' before the
+  // name is touched). Refitted on every render and whenever the label's box
+  // changes size (pane or window resize, columns moving). Measured in the
+  // focused bar's bold weight so the text still fits when focus arrives;
+  // the full path is the label's tooltip.
+  let labelEl = null;
+  const labelRO = new ResizeObserver(() => fitLabel());
+  function fitLabel() {
+    if (!labelEl?.clientWidth) return;
+    const full = tile.label();
+    labelEl.title = full;
+    const cs = getComputedStyle(labelEl);
+    const font = `600 ${cs.fontSize} ${cs.fontFamily}`;
+    labelEl.textContent = fitPath(full, labelEl.clientWidth - 1, (t) => textWidth(t, font));
+  }
+
   colsEl.addEventListener('keydown', async (ev) => {
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     if (ev.target !== colsEl) return; // e.g. the inline rename input
+    if (drilled) {
+      // The selection is in the preview: vertical keys scroll it, ← leaves.
+      // Anything else (r, d, D…) still acts on the file under the cursor.
+      const body = previewBody();
+      const by = { ArrowUp: -SCROLL_STEP, k: -SCROLL_STEP, ArrowDown: SCROLL_STEP, j: SCROLL_STEP }[ev.key]
+        ?? (body && { PageUp: -body.clientHeight * 0.9, PageDown: body.clientHeight * 0.9, ' ': body.clientHeight * 0.9 }[ev.key]);
+      if (by) {
+        ev.preventDefault();
+        body?.scrollBy(0, by);
+        return;
+      }
+      if (ev.key === 'Home' || ev.key === 'End') {
+        ev.preventDefault();
+        if (body) body.scrollTop = ev.key === 'Home' ? 0 : body.scrollHeight;
+        return;
+      }
+      if (ev.key === 'ArrowLeft' || ev.key === 'h' || ev.key === 'Escape') {
+        ev.preventDefault();
+        setDrilled(null);
+        return;
+      }
+      if (ev.key === 'ArrowRight' || ev.key === 'l' || ev.key === 'Enter') {
+        ev.preventDefault();
+        return;
+      }
+    }
     const step = { ArrowUp: -1, k: -1, ArrowDown: 1, j: 1 }[ev.key];
     if (step) {
       ev.preventDefault();
@@ -865,8 +1031,16 @@ export function makeFilesTile(id) {
       rerender();
     } else if (ev.key === 'ArrowRight' || ev.key === 'l' || ev.key === 'Enter') {
       const cur = ((await list(state.dir)).entries || []).find((e) => e.name === state.cursor);
-      if (cur?.type !== 'dir') return;
+      if (!cur) return;
       ev.preventDefault();
+      if (cur.type !== 'dir') {
+        // A file: drill into its preview, once there is content to scroll
+        // (a narrow stat-only column has nothing to drill into).
+        if (previewBody() && !colsEl.querySelector('.files-preview.narrow')) {
+          setDrilled(fsJoin(state.dir, cur.name));
+        }
+        return;
+      }
       state.dir = fsJoin(state.dir, cur.name);
       const sub = (await list(state.dir)).entries || [];
       const remembered = cursorMemory.get(state.dir);
@@ -886,6 +1060,13 @@ export function makeFilesTile(id) {
       if (!state.cursor) return;
       ev.preventDefault();
       deleteCursor();
+    } else if (ev.key === 'D') {
+      if (!state.cursor) return;
+      ev.preventDefault();
+      const cur = ((await list(state.dir)).entries || []).find((e) => e.name === state.cursor);
+      if (!cur) return;
+      if (cur.type === 'dir') return setStatus('select a file to download');
+      download(fsJoin(state.dir, cur.name));
     }
   });
 
@@ -893,13 +1074,21 @@ export function makeFilesTile(id) {
     root,
     term: null,
     ws: null,
-    labelEl: null,
     opened: false,
-    label: () => previewName || fsBase(state.dir),
+    // app.js assigns the bar's label element here (again after every layout
+    // re-render); the widget keeps it fitted as long as it is attached.
+    get labelEl() { return labelEl; },
+    set labelEl(el) {
+      if (labelEl) labelRO.unobserve(labelEl);
+      labelEl = el;
+      if (el) labelRO.observe(el);
+    },
+    label: () => tildePath(state.cursor ? fsJoin(state.dir, state.cursor) : state.dir),
     focus() { colsEl.focus({ preventScroll: true }); }, // app.js animates the strip itself
     fitAndReport() {}, // no terminal geometry to report
     dispose() { // pane closed: drop the watch streams and the window listener
       window.removeEventListener('focus', onWindowFocus);
+      labelRO.disconnect();
       for (const es of watchers.values()) es.close();
       watchers.clear();
     },
@@ -913,7 +1102,7 @@ export function makeFilesTile(id) {
       this.opened = true;
       (async () => {
         // Resolve '~' (or a since-deleted dir) to a real absolute path first.
-        let data = await list(state.dir);
+        let [data] = await Promise.all([list(state.dir), learnHome()]);
         if (data.error) {
           state.cursor = null;
           data = await list('~');
