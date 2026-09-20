@@ -26,12 +26,36 @@ client-test:     ## headless harness: profile store, IPC, tunnel state machine; 
 
 # electron-builder's own zip target flattens symlinks when run on Linux,
 # which breaks the frameworks' layout (and their signatures) on the Mac —
-# see electron/pack-mac.js. So: build the .app as a directory, zip it here.
+# see electron/pack-mac.js. So: build the .app as a directory, sign it,
+# zip it here.
+#
+# Signing happens on this Linux host with rcodesign (apple-codesign,
+# https://github.com/indygreg/apple-platform-rs — a single static binary;
+# put it on PATH). macOS 26.5+/27 identifies an app by its code signature
+# for Local Network privacy and Keychain access, so an unsigned or
+# unsignable app is denied every LAN connection. With SIGN_PEM (a unified
+# PEM: private key + certificate, e.g. from
+#   rcodesign generate-self-signed-certificate --algorithm ecdsa \
+#     --person-name webmux --validity-days 3650 --pem-unified-file $(SIGN_PEM)
+# ) the app's identity is stable across builds — one Local Network prompt
+# and one Keychain prompt ever, not per update. Without it: ad-hoc, a new
+# identity per build. Without rcodesign: unsigned, and the zip's mac-sign.sh
+# has to be run on the Mac after installing. Keep the PEM out of git and
+# back it up: a new key is a new identity.
+#
 # APP_ID overrides the bundle identifier (a fresh one makes macOS treat the
 # app as new, e.g. to get a clean Local Network prompt).
 APP_ID ?=
-client: client-test payload  ## build the unsigned arm64 .app zip (cross-builds from Linux)
+SIGN_PEM ?= $(HOME)/.config/webmux/codesign.pem
+RCODESIGN := $(shell command -v rcodesign 2>/dev/null)
+client: client-test payload  ## build the arm64 .app zip (cross-builds from Linux; signed here if rcodesign is on PATH)
 	cd electron && npx electron-builder --mac dir --arm64 $(if $(APP_ID),-c.appId=$(APP_ID),)
+ifdef RCODESIGN
+	$(RCODESIGN) sign $(if $(wildcard $(SIGN_PEM)),--pem-file $(SIGN_PEM),) electron/dist/mac-arm64/webmux.app 2>&1 | grep -vE "^(entering|leaving|signing|creating cryptographic)" || true
+	@echo "signed: $(if $(wildcard $(SIGN_PEM)),certificate $(SIGN_PEM) (stable identity),ad-hoc (identity changes per build; set SIGN_PEM for a stable one))"
+else
+	@echo "rcodesign not on PATH — shipping UNSIGNED; run mac-sign.sh from the zip on the Mac after installing"
+endif
 	cd electron && node pack-mac.js dist/mac-arm64/webmux.app \
 	  "dist/webmux-$$(node -p 'require("./package.json").version')$(if $(APP_ID),-$(subst .,_,$(APP_ID)),)-arm64-mac.zip" mac-sign.sh
 	@ls -lh electron/dist/*.zip

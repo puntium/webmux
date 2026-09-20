@@ -1,13 +1,15 @@
 #!/bin/sh
-# Re-sign webmux.app on the Mac it was installed on.
+# Fallback: re-sign webmux.app on the Mac it was installed on.
 #
-# The .app is cross-built on Linux, where electron-builder cannot sign it.
-# The bundle still carries Electron's own ad-hoc signature, but that no
-# longer validates once the executable is renamed and Info.plist rewritten
-# — and macOS's Local Network privacy check identifies the responsible
-# process by its code signature, so an app it cannot validate is denied
-# every LAN connection no matter what the toggle says (macOS 26.5+/27).
-# Signing the installed copy gives it an identity the grant can attach to.
+# Normally unnecessary — `make client` signs the .app on the Linux build
+# host with rcodesign (see the Makefile). Use this when the build host had
+# no rcodesign and shipped the app unsigned: electron-builder cannot sign
+# on Linux, the bundle's leftover Electron signature no longer validates
+# once the executable is renamed and Info.plist rewritten, and macOS's
+# Local Network privacy check identifies the responsible process by its
+# code signature — an app it cannot validate is denied every LAN connection
+# no matter what the toggle says (macOS 26.5+/27). Signing the installed
+# copy gives it an identity the grant can attach to.
 #
 #   sh mac-sign.sh                       # ad-hoc identity ("-")
 #   sh mac-sign.sh "Apple Development"   # or any code-signing identity in your keychain

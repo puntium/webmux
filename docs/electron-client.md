@@ -251,10 +251,21 @@ copies of everything — 60 MB heavier and a layout codesign calls
 That matters since macOS 26.5+/27: Local Network privacy identifies the
 responsible process by its code signature, and an app it cannot validate
 is denied every LAN connection (instant `No route to host` from ssh) even
-with its toggle on. `mac-sign.sh` ships in the zip: run it on the Mac after
-installing to re-sign the app inside-out (frameworks, helpers, app) with
-an ad-hoc or keychain identity. `make client APP_ID=<id>` builds under a
-different bundle identifier when macOS needs to see a brand-new app.
+with its toggle on. `make client` therefore signs the .app on the Linux
+build host with rcodesign (apple-codesign): nested bundles, frameworks,
+dylibs and helpers inside-out, then the app. With `SIGN_PEM` pointing at a
+unified PEM (private key + certificate; a self-signed one from `rcodesign
+generate-self-signed-certificate` is enough — macOS never needs to trust
+it, the designated requirement `identifier "me.puntium.webmux" and
+certificate root = H"…"` just has to stay constant) the app keeps one
+identity across builds, so the Local Network grant and the Keychain
+"webmux Safe Storage" ACL survive updates. Ad-hoc signing (no PEM) works
+too but is a new identity per build: every update re-prompts for both. The
+PEM lives outside the repo (`~/.config/webmux/codesign.pem`); back it up,
+a new key is a new identity. `mac-sign.sh` still ships in the zip as the
+fallback for a build host without rcodesign: run it on the Mac after
+installing. `make client APP_ID=<id>` builds under a different bundle
+identifier when macOS needs to see a brand-new app.
 
 Cross-building the zip from Linux works (no native modules in the client;
 electron-builder downloads the darwin Electron binary). Building on the Mac
