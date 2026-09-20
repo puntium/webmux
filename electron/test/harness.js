@@ -23,10 +23,14 @@ const revealed = [];
 const loads = [];
 let appScheme = null; // the webmux:// protocol handler
 let willDownload = null; // main's will-download hook
+let menu = null; // the application menu template main built
+const focused = []; // every webContents.focus() call, in order
 
 class FakeWebContents {
   constructor() { this.url = ''; }
   getURL() { return this.url; }
+  focus() { focused.push(this); }
+  isDestroyed() { return false; }
   loadFile(f) { loads.push(['file', f]); this.url = 'file://' + f; }
   loadURL(u) { loads.push(['url', u]); this.url = u; }
   send(ch, payload) { sent.push({ ch, payload }); }
@@ -75,7 +79,7 @@ const stub = {
   BaseWindow: FakeBaseWindow,
   BrowserWindow: FakeBrowserWindow,
   WebContentsView: FakeWebContentsView,
-  Menu: { setApplicationMenu: () => {}, buildFromTemplate: (t) => t },
+  Menu: { setApplicationMenu: () => {}, buildFromTemplate: (t) => { menu = t; return t; } },
   shell: { openExternal: () => {}, openPath: () => {}, showItemInFolder: (p) => { revealed.push(p); } },
   powerMonitor: { on: () => {} },
   session: { defaultSession: { on: (ev, fn) => { if (ev === 'will-download') willDownload = fn; } } },
@@ -399,13 +403,32 @@ const connState = async (name) =>
     'unknown/duplicate names dropped; omitted connections keep their place at the end');
   assert.ok((await handlers['conns:reorder'](null, 'bad')).error, 'non-array order rejected');
 
-  // switching views never touches tunnels
+  // switching views never touches tunnels; the revealed view takes the keys
   await handlers['conns:show'](null, 'bad');
   snap = await handlers['conns:get']();
   assert.strictEqual(snap.active, 'bad', 'show switches the active view');
+  assert.ok(!focused.at(-1).url.startsWith('file:'), 'show focuses the host page, not the chrome');
   await handlers['conns:show'](null, null);
   snap = await handlers['conns:get']();
   assert.strictEqual(snap.active, null, 'show(null) returns to the connection page');
+  assert.ok(focused.at(-1).url.endsWith('connect.html'), 'show(null) focuses the connection page');
+
+  // ⌘⇧[ / ⌘⇧] walk the pill order and wrap; the connection page counts as
+  // "before the first" going forward and "after the last" going back
+  const menuItem = (label) => menu.flatMap((m) => m.submenu || []).find((i) => i.label === label);
+  const active = async () => (await handlers['conns:get']()).active;
+  menuItem('Next Host').click();
+  assert.strictEqual(await active(), 'bad', 'next from the connection page → first host');
+  menuItem('Next Host').click();
+  assert.strictEqual(await active(), 'bad2', 'next → following pill');
+  menuItem('Next Host').click();
+  assert.strictEqual(await active(), 'bad', 'next wraps to the first pill');
+  menuItem('Previous Host').click();
+  assert.strictEqual(await active(), 'bad2', 'previous wraps to the last pill');
+  await handlers['conns:show'](null, null);
+  menuItem('Previous Host').click();
+  assert.strictEqual(await active(), 'bad2', 'previous from the connection page → last host');
+  await handlers['conns:show'](null, null);
 
   // disconnect removes just that connection
   await handlers['conns:disconnect'](null, 'bad2');

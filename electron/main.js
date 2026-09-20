@@ -290,7 +290,28 @@ function userShow(name) {
 function show(name) {
   activeName = name && conns.has(name) ? name : null;
   layoutViews();
+  focusPage();
   broadcast();
+}
+
+// Keyboard focus belongs to the visible content view. The pane chords
+// (⌘↑↓←→, ⌘↩, …) are handled by the host page itself, so a click on the
+// header strip — which is its own view and would otherwise keep the focus
+// it took on mousedown — must hand it straight back, and a view switch
+// (pill, ⌘<n>, ⌘⇧[ ]) must focus the view it revealed, not leave the keys
+// going to the one it hid.
+function focusPage() {
+  const view = (activeName && conns.get(activeName)?.view) || connectView;
+  if (view && !view.webContents.isDestroyed()) view.webContents.focus();
+}
+
+// ⌘⇧[ / ⌘⇧]: previous / next host in pill order, wrapping; from the
+// connection page they land on the last / first host.
+function showAdjacent(dir) {
+  const names = [...conns.keys()];
+  if (!names.length) return;
+  const i = activeName ? names.indexOf(activeName) : (dir > 0 ? -1 : names.length);
+  userShow(names[(i + dir + names.length) % names.length]);
 }
 
 // The window title carries the fleet summary ("webmux — 2 hosts · 7 panes");
@@ -997,6 +1018,7 @@ function chromeCmd(cmd) {
     return { error: 'unknown command' };
   }
   conn.view.webContents.executeJavaScript(js).catch(() => {});
+  focusPage(); // a header-button click took the focus; the page needs it back
   return { ok: true };
 }
 
@@ -1186,6 +1208,11 @@ function createWindow() {
   }
   win.contentView.addChildView(connectView);
   win.contentView.addChildView(headerView);
+  // The strip has nothing to type into; any focus it gains (a click on a
+  // pill, a button, or dead space) goes back to the page so the pane chords
+  // keep working. Mouse delivery is unaffected: the click and any pill drag
+  // still complete in the view that got the mousedown.
+  headerView.webContents.on('focus', () => setImmediate(focusPage));
   headerView.webContents.loadFile('header.html');
   connectView.webContents.loadFile('connect.html');
 
@@ -1279,6 +1306,10 @@ function buildMenu() {
       submenu: [
         { role: 'minimize' },
         { role: 'zoom' },
+        { type: 'separator' },
+        // Cmd+Shift+[ / ] cycle through connected hosts in pill order.
+        { label: 'Previous Host', accelerator: 'CmdOrCtrl+Shift+[', click: () => showAdjacent(-1) },
+        { label: 'Next Host', accelerator: 'CmdOrCtrl+Shift+]', click: () => showAdjacent(1) },
         { type: 'separator' },
         // Cmd+1..9 jump between connected hosts in pill order.
         ...Array.from({ length: 9 }, (_, i) => ({

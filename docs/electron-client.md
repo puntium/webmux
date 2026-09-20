@@ -25,7 +25,7 @@ Electron main process (macOS)
                                           └─ ptyhost daemon (unchanged)
 ```
 
-Several profiles can be connected at once; the header pills (or ⌘1…⌘9)
+Several profiles can be connected at once; the header pills (or ⌘1…⌘9, ⌘⇧[ / ⌘⇧] to cycle)
 switch which view fills the window, and hidden views keep their tunnels and
 WebSockets alive (`backgroundThrottling: false`), so switching back is
 instant. The pill strip lives in a client-owned view, not in the served

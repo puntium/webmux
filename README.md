@@ -79,7 +79,8 @@ name — then **Connect**. The first connect to a host pushes a node runtime
 (~25 MB, cached locally per platform) and the server payload over ssh,
 starts the server, and tunnels to it; later connects reuse what's there.
 Several hosts can be connected at once; pills in the header (drag to
-reorder) or ⌘1…⌘9 switch between them. ⌘⇧R reconnects the current host.
+reorder), ⌘1…⌘9, or ⌘⇧[ / ⌘⇧] (previous / next) switch between them. ⌘⇧R
+reconnects the current host.
 
 Instances: a profile's instance name (blank = `default`) selects which
 named server/pty-host pair it talks to. Distinct instances on one host are
