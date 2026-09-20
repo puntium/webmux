@@ -102,6 +102,15 @@ code remains.
 
 A self-contained npm package so the server install never pulls Electron.
 
+- `lan.js` — macOS Local Network privacy helpers (Electron-free, unit-tested
+  in `test/lan.js`): the profile's direct ssh hop, the LAN classifier
+  (`.local`, RFC 1918, link-local, ULA), a one-shot TCP probe from the main
+  process that pulls the permission prompt onto the process whose children
+  the ssh spawns are, and the `No route to host` denial signature that turns
+  a failed connect's status into a pointer at the Local Network toggle. The
+  Info.plist carries `NSLocalNetworkUsageDescription` via electron-builder's
+  `extendInfo`. `WEBMUX_LAN_PROBE=1` enables the probe and hint off-macOS
+  (the harness sets it).
 - `main.js` — tunnel supervision, profile store, window, menu.
   - **Profiles** at `<userData>/config.json` (`~/Library/Application
     Support/webmux/config.json` on macOS): `{ profiles: [{ name, host,
@@ -230,8 +239,22 @@ server with the deployed payload on its next connect.)
 ```sh
 cd electron && npm install
 npm start            # dev run (any platform with a display)
-npm run dist         # dist/webmux-<version>-arm64-mac.zip
+npm run dist         # dist/webmux-<version>-arm64-mac.zip (electron-builder --mac dir + pack-mac.js)
 ```
+
+The zip is written by `pack-mac.js`, not electron-builder: its zip target
+flattens symlinks when run on Linux, and an Electron bundle's frameworks
+are held together by them (`Versions/Current`, `Mantle ->
+Versions/Current/Mantle`, …). Flattened, each framework unpacks with two
+copies of everything — 60 MB heavier and a layout codesign calls
+"ambiguous", so the app can neither keep nor be given a valid signature.
+That matters since macOS 26.5+/27: Local Network privacy identifies the
+responsible process by its code signature, and an app it cannot validate
+is denied every LAN connection (instant `No route to host` from ssh) even
+with its toggle on. `mac-sign.sh` ships in the zip: run it on the Mac after
+installing to re-sign the app inside-out (frameworks, helpers, app) with
+an ad-hoc or keychain identity. `make client APP_ID=<id>` builds under a
+different bundle identifier when macOS needs to see a brand-new app.
 
 Cross-building the zip from Linux works (no native modules in the client;
 electron-builder downloads the darwin Electron binary). Building on the Mac

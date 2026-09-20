@@ -1,12 +1,12 @@
 {
   "name": "webmux-client",
-  "version": "0.21.2",
+  "version": "0.21.3",
   "private": true,
   "description": "macOS Electron client for webmux, connected over a supervised SSH tunnel",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --mac zip --arm64"
+    "dist": "electron-builder --mac dir --arm64 && node pack-mac.js dist/mac-arm64/webmux.app dist/webmux-$npm_package_version-arm64-mac.zip mac-sign.sh"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -30,6 +30,7 @@
       "preload.js",
       "log.js",
       "deploy.js",
+      "lan.js",
       "platforms.js",
       "connect.html",
       "header.html",
@@ -40,7 +41,10 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "identity": null
+      "identity": null,
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "webmux connects to hosts on your local network over ssh."
+      }
     }
   }
 }

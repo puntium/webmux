@@ -40,6 +40,7 @@ const net = require('net');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { deploy } = require('./deploy');
+const lan = require('./lan');
 const log = require('./log');
 
 // The app pages load on webmux:// (served from the bundle by the handler in
@@ -246,7 +247,18 @@ let connectView = null; // connect.html — profile manager + status detail
 const conns = new Map(); // profile name -> connection; insertion order = pill order (drag-reorderable)
 let activeName = null; // name of the connection whose view is showing; null = connect page
 const portByProfile = new Map(); // ephemeral picks, stable within this app run
+const lanWarmed = new Set(); // 'host:port' targets this process has reached once (see warmLocalNetwork)
 let quitting = false;
+
+// macOS gates LAN connections behind a per-app grant (see lan.js). Elsewhere
+// the probe and the hint are noise; WEBMUX_LAN_PROBE=1 turns them on for the
+// headless harness.
+const LAN_GATED = process.platform === 'darwin' || process.env.WEBMUX_LAN_PROBE === '1';
+// ms to keep re-probing a denied LAN target while the prompt may be up, and
+// ms a connect parked on the Local Network hint keeps watching for the grant.
+// (Env overrides exist for the harness, which can't answer a prompt.)
+const LAN_GRANT_WAIT = Number(process.env.WEBMUX_LAN_GRANT_WAIT_MS) || 20000;
+const LAN_RECOVER_WAIT = Number(process.env.WEBMUX_LAN_RECOVER_WAIT_MS) || 180000;
 
 function makeView() {
   const view = new WebContentsView({
@@ -541,6 +553,91 @@ function startTunnel(conn) {
   runDeploy(conn, gen, env, String(conn.profile.instance || '') || 'default');
 }
 
+// Before the first ssh to a LAN host, touch it from this process so the
+// macOS Local Network prompt is attributed to main — the process whose
+// children the ssh spawns are — rather than to whichever Electron helper
+// happened to speak first. One success per target per app run is enough;
+// a denial (instant EHOSTUNREACH) is re-probed next time, since the user
+// may have flipped the toggle in between. Never fails the connect: ssh runs
+// regardless and reports its own verdict.
+async function warmLocalNetwork(conn, gen) {
+  if (!LAN_GATED) return;
+  const target = lan.sshTarget(conn.profile);
+  if (!target) return;
+  const key = `${target.host}:${target.port}`;
+  if (lanWarmed.has(key)) return;
+  if (!(await lan.isLocalTarget(target.host))) return;
+  if (quitting || gen !== conn.generation) return;
+  setConnStatus(conn, { state: 'connecting', msg: 'checking local network access…' });
+  let r = await lan.probe(target.host, target.port);
+  if (quitting || gen !== conn.generation) return;
+  if (lan.grantPending(r, target.host)) {
+    // Denied (or, for a .local name, unresolvable — mDNS is gated too).
+    // Either the prompt is on screen right now (macOS fails the pending
+    // connect while it waits for the answer, typically after ~1s) or the
+    // grant is missing/broken. Keep re-probing for a while so a user who
+    // clicks Allow gets a working ssh on this attempt instead of an ssh
+    // that raced the prompt and lost; a stale denial just costs the wait
+    // and then fails into the hint, whose recovery loop keeps watching.
+    log.warn(conn.name, `local network probe: ${r.code} in ${r.ms}ms — waiting for the macOS Local Network grant`, { host: target.host, port: target.port });
+    setConnStatus(conn, { state: 'connecting', msg: 'waiting for macOS Local Network permission — allow webmux in the prompt…' });
+    const until = Date.now() + LAN_GRANT_WAIT;
+    while (Date.now() < until) {
+      await sleep(1000);
+      if (quitting || gen !== conn.generation) return;
+      r = await lan.probe(target.host, target.port);
+      if (quitting || gen !== conn.generation) return;
+      if (!lan.grantPending(r, target.host)) break;
+    }
+  }
+  if (r.ok) {
+    lanWarmed.add(key);
+    log.info(conn.name, 'local network probe: reachable', { host: target.host, port: target.port, ms: r.ms });
+  } else if (lan.grantPending(r, target.host)) {
+    log.warn(conn.name, `local network probe: still ${r.code} after ${LAN_GRANT_WAIT / 1000}s — the macOS Local Network grant is missing or broken`, { host: target.host, port: target.port });
+  } else {
+    log.info(conn.name, 'local network probe: ' + r.code, { host: target.host, port: target.port, ms: r.ms });
+  }
+}
+
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms).unref());
+
+// A connect that parked on the Local Network hint: keep probing the target
+// from this process and, the moment a connection goes through (the user
+// flipped the toggle or answered a late prompt), start a fresh attempt —
+// no need to find the Connect button. Stops when the user acts on the
+// connection (any generation bump), when the profile goes away, or after
+// LAN_RECOVER_WAIT.
+async function awaitLanGrant(conn, gen) {
+  const target = lan.sshTarget(conn.profile);
+  if (!target) return;
+  const until = Date.now() + LAN_RECOVER_WAIT;
+  const live = () => !quitting && gen === conn.generation && conns.has(conn.name) && !conn.tunnel && !conn.discovery;
+  while (live() && Date.now() < until) {
+    await sleep(2000);
+    if (!live()) return;
+    const r = await lan.probe(target.host, target.port);
+    if (!live()) return;
+    if (r.ok) {
+      lanWarmed.add(`${target.host}:${target.port}`);
+      log.info(conn.name, 'local network access granted — reconnecting', { host: target.host, port: target.port });
+      startTunnel(conn);
+      return;
+    }
+  }
+}
+
+// The status line for a failed/interrupted attempt: ssh's exit code, or —
+// when its stderr carries the Local Network denial signature on a gated
+// platform — what that actually means and where the toggle is.
+function failureMsg(conn, exitCode) {
+  if (LAN_GATED && lan.looksDenied(conn.stderrTail)) {
+    log.warn(conn.name, 'ssh reported "No route to host" — on macOS this is usually the Local Network privacy grant, not routing');
+    return lan.HINT;
+  }
+  return exitCode !== undefined ? `ssh exited (${exitCode})` : 'connection failed';
+}
+
 // Connecting IS deploying: push the node runtime + server payload to the
 // host if it doesn't have this client's versions yet, (re)start the server
 // there, then tunnel to the advertised socket. Runs on every (re)connect
@@ -579,6 +676,8 @@ async function runDeploy(conn, gen, env, instance) {
     isLive: () => !quitting && gen === conn.generation,
   };
   try {
+    await warmLocalNetwork(conn, gen);
+    if (quitting || gen !== conn.generation) return;
     let manifest;
     try {
       manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'payload', 'payload.json'), 'utf8'));
@@ -648,10 +747,9 @@ function spawnTunnel(conn, gen, env, remoteSock) {
 function onTunnelDown(conn, gen, exitCode) {
   if (quitting || gen !== conn.generation) return;
   if (conn.hadConnection) return scheduleRetry(conn, gen, exitCode);
-  setConnStatus(conn, {
-    state: 'failed',
-    msg: exitCode !== undefined ? `ssh exited (${exitCode})` : 'connection failed',
-  });
+  const msg = failureMsg(conn, exitCode);
+  setConnStatus(conn, { state: 'failed', msg });
+  if (msg === lan.HINT) awaitLanGrant(conn, gen);
   surfaceFailure(conn);
 }
 
@@ -661,7 +759,7 @@ function scheduleRetry(conn, gen, exitCode) {
   log.warn(conn.name, `interrupted — retry in ${conn.retryDelay / 1000}s`, exitCode !== undefined ? { exitCode } : undefined);
   setConnStatus(conn, {
     state: 'retry',
-    msg: exitCode !== undefined ? `ssh exited (${exitCode})` : 'connection failed',
+    msg: failureMsg(conn, exitCode),
     delay: Math.round(conn.retryDelay / 1000),
   });
   surfaceFailure(conn); // no-op while this connection's page is live

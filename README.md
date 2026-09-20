@@ -68,9 +68,27 @@ make client-deps   # cd electron && npm install
 make client        # harness → server payload → electron/dist/webmux-<version>-arm64-mac.zip
 ```
 
-`make client` cross-builds from Linux (no native modules in the client).
-The zip is unsigned: unzip, then right-click → Open once, or
-`xattr -dr com.apple.quarantine webmux.app`.
+`make client` cross-builds from Linux (no native modules in the client);
+`make client APP_ID=me.example.webmux2` builds under another bundle
+identifier, which macOS treats as a brand-new app (fresh privacy prompts).
+The build has no signature Linux can produce, so install like this on the
+Mac — the last step matters on macOS 26.5+/27, whose Local Network privacy
+check identifies an app by its code signature and silently denies every
+LAN connection (`ssh: No route to host`) to one it cannot validate:
+
+```sh
+# unzip, drag webmux.app to /Applications in Finder (the drag is what
+# defeats App Translocation), then:
+xattr -dr com.apple.quarantine /Applications/webmux.app
+sh mac-sign.sh                 # from the zip: ad-hoc-signs the installed app
+sh mac-sign.sh "Apple Development"   # …or with an identity from your keychain
+```
+
+Signing gives the app a new identity, so the first connect after it asks
+for Local Network access once more; allow it. The zip keeps the bundle's
+symlinks (electron-builder's own zip target flattens them on Linux, which
+breaks the frameworks' layout so badly that codesign refuses the app —
+see `electron/pack-mac.js`).
 
 In the app: **Connections** (⌘⇧O) → add a profile — a name and an ssh host,
 optionally port, identity file, extra ssh options, a saved password
@@ -107,6 +125,21 @@ socket, and reattach replays a snapshot. On the client side:
   you; nothing churns in the background while you edit profiles.
 - Lid-open kills pre-sleep tunnels immediately rather than waiting out the
   keepalives.
+- macOS Local Network privacy (macOS 15+, stricter on 26.5+/27) gates ssh
+  to LAN hosts (`.local` names, RFC 1918 / link-local addresses) behind a
+  per-app grant, and a denied connect fails instantly with `No route to
+  host`. The grant is attributed per process, and Electron helper processes
+  get their own entries, so the prompt can land on the wrong one and leave
+  the ssh children denied. Before the first ssh to a LAN host per app run,
+  main.js opens and closes one TCP connection to it from its own process
+  (`lan.js`), so the prompt is attributed to the process that owns the ssh
+  children. A denied probe (or, for a `.local` name, a failed lookup — mDNS
+  is gated too) holds the attempt for up to 20 s while the prompt is up, so
+  clicking Allow lets that same connect proceed. If ssh still reports `No
+  route to host`, the connection page says so in those words and points at
+  System Settings › Privacy & Security › Local Network instead of showing a
+  bare exit code, and the parked connection keeps probing for three minutes
+  and reconnects by itself once a connection goes through.
 - The page itself marks its title `· offline` while any session socket is
   down and retrying; the client shows that as an amber *degraded* pill, so
   the chrome never claims "connected" over a terminal that says
@@ -336,8 +369,11 @@ into Claude Code finds it too.
 
 ```
 electron/        macOS client: main.js (tunnels, views, IPC), deploy.js (push flow),
-                 connect.html / header.html (client-owned pages), ui/ (the frontend),
-                 test/harness.js (headless state-machine tests), payload/ (built)
+                 lan.js (macOS Local Network probe + hint), connect.html /
+                 header.html (client-owned pages), ui/ (the frontend), test/
+                 (headless harness + lan.js unit tests), pack-mac.js (symlink-
+                 keeping zip of the built .app), mac-sign.sh (sign it on the
+                 Mac), payload/ (built)
 server.js        remote API + WebSocket proxy (pushed to hosts as part of the payload)
 ptyhost.js       pty daemon; ptyhost-client.js is its control-socket client
 deploy/          build-payload.js (server tarball), remote-start.js (runs on the host)

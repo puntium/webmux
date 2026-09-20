@@ -7,6 +7,8 @@ const path = require('path');
 const assert = require('assert');
 
 const appDir = path.join(__dirname, '..');
+process.env.WEBMUX_LAN_PROBE = '1'; // exercise the macOS Local Network probe + hint on any platform
+process.env.WEBMUX_LAN_GRANT_WAIT_MS = '1500'; // nobody answers a prompt here
 const scratch = path.join(os.tmpdir(), `webmux-client-test-${process.pid}`);
 fs.rmSync(scratch, { recursive: true, force: true });
 fs.mkdirSync(scratch, { recursive: true });
@@ -457,6 +459,59 @@ const connState = async (name) =>
   r = await handlers['profiles:restart-sessions'](null, 'bad-renamed');
   assert.ok(r.error && /ssh exited/.test(r.error), `restart against a dead host errors (got ${JSON.stringify(r)})`);
   console.log('restart-sessions ok  (stderr above is the expected resolve failure)');
+
+  // -- macOS Local Network denial: probe runs first, hint replaces the msg --
+  // A `.local` host is a LAN target, so the pre-ssh probe from this process
+  // runs. The probe itself is stubbed (main.js calls it through the module
+  // object) to answer like a denied macOS socket — what the resolver on the
+  // test box does with a .local name is beside the point — so the short
+  // wait window elapses first. Then a fake ssh on PATH fails the same way:
+  // instant "No route to host", exit 255. The failure surfaces as the Local
+  // Network hint rather than a bare exit code, with ssh's own line kept in
+  // the stderr tail; once the stubbed probe starts succeeding (the user
+  // flipped the toggle), the parked connection reconnects on its own.
+  {
+    const lan = require(path.join(appDir, 'lan.js'));
+    const realProbe = lan.probe;
+    let probeResult = { ok: false, code: 'EHOSTUNREACH', ms: 12 };
+    lan.probe = async () => probeResult;
+    const fakeBin = path.join(scratch, 'fakebin');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.writeFileSync(path.join(fakeBin, 'ssh'),
+      '#!/bin/sh\necho "ssh: connect to host webmux-test.local port 22: No route to host" >&2\nexit 255\n',
+      { mode: 0o755 });
+    const realPath = process.env.PATH;
+    process.env.PATH = fakeBin + path.delimiter + realPath;
+    r = await handlers['profiles:save'](null, { name: 'lan', host: 'me@webmux-test.local' });
+    assert.ok(r.ok);
+    r = await handlers['profiles:connect'](null, 'lan');
+    assert.ok(r.ok);
+    // The first probe's lookup of a .local name can take a few seconds on a
+    // resolver without mDNS; watch the status until the wait message shows.
+    const deadline = Date.now() + 12000;
+    let sawWait = false;
+    while (Date.now() < deadline) {
+      st = await connState('lan');
+      if (/waiting for macOS Local Network permission/.test(st.msg)) sawWait = true;
+      if (st.state === 'failed') break;
+      await sleep(50);
+    }
+    assert.ok(sawWait, `waits for the grant before spawning ssh (last: ${st.state} ${st.msg})`);
+    process.env.PATH = realPath;
+    st = await connState('lan');
+    assert.strictEqual(st.state, 'failed', `expected failed, got ${st.state} (${st.msg})`);
+    assert.strictEqual(st.msg, lan.HINT, `Local Network hint shown (got: ${st.msg})`);
+    assert.ok(/No route to host/.test(st.stderr), 'ssh line kept in the tail');
+    // Grant lands: the parked connection notices and starts a new attempt.
+    probeResult = { ok: true, ms: 3 };
+    const until = Date.now() + 6000;
+    while ((await connState('lan')).state === 'failed' && Date.now() < until) await sleep(50);
+    st = await connState('lan');
+    assert.notStrictEqual(st.state, 'failed', 'reconnects by itself once the probe goes through');
+    lan.probe = realProbe;
+    await handlers['profiles:delete'](null, 'lan');
+    console.log('local-network-hint ok');
+  }
 
   // -- delete of a connected profile disconnects it ----------------------
   r = await handlers['profiles:delete'](null, 'bad-renamed');
