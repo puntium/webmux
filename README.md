@@ -69,14 +69,13 @@ make client        # harness → server payload → electron/dist/webmux-<versio
 ```
 
 `make client` cross-builds from Linux (no native modules in the client)
-and signs the app there with [rcodesign](https://github.com/indygreg/apple-platform-rs)
-if it is on PATH — with the certificate at `SIGN_PEM`
-(`~/.config/webmux/codesign.pem` by default; the Makefile shows how to
-generate a self-signed one) for an identity that stays the same across
-builds, ad-hoc otherwise. Signing is not cosmetic: macOS 26.5+/27
-identifies an app by its code signature for Local Network privacy and
-Keychain access, and an app it cannot validate is silently denied every LAN
-connection (`ssh: No route to host`) even with its toggle on. Install:
+and signs the app there with rcodesign — a stable identity when the
+certificate at `SIGN_PEM` (`~/.config/webmux/codesign.pem`) exists, ad-hoc
+otherwise. Signing is not cosmetic: macOS 26.5+/27 identifies an app by its
+code signature for Local Network privacy and Keychain access, and an app it
+cannot validate is silently denied every LAN connection (`ssh: No route to
+host`) even with its toggle on. Build-host setup, key handling and
+troubleshooting: [docs/signing.md](docs/signing.md). Install:
 
 ```sh
 # unzip, drag webmux.app to /Applications in Finder (the drag is what
@@ -87,13 +86,7 @@ xattr -dr com.apple.quarantine /Applications/webmux.app
 First launch asks for Local Network access (allow it) and Keychain access
 to the saved-password store (Always Allow). With a certificate-signed build
 that happens once; an ad-hoc build is a new identity every time, so it asks
-again after each update. The build refuses to run without rcodesign rather
-than ship an unsigned app that would install fine and then fail every
-connection. `make client APP_ID=me.example.webmux2` builds under another bundle
-identifier, which macOS treats as a brand-new app. The zip keeps the
-bundle's symlinks (electron-builder's own zip target flattens them on
-Linux, which breaks the frameworks' layout so badly that codesign refuses
-the app — see `electron/pack-mac.js`).
+again after each update.
 
 In the app: **Connections** (⌘⇧O) → add a profile — a name and an ssh host,
 optionally port, identity file, extra ssh options, a saved password

@@ -29,19 +29,14 @@ client-test:     ## headless harness: profile store, IPC, tunnel state machine; 
 # see electron/pack-mac.js. So: build the .app as a directory, sign it,
 # zip it here.
 #
-# Signing happens on this Linux host with rcodesign (apple-codesign,
-# https://github.com/indygreg/apple-platform-rs — a single static binary;
-# put it on PATH). macOS 26.5+/27 identifies an app by its code signature
-# for Local Network privacy and Keychain access, so an unsigned or
-# unsignable app is denied every LAN connection. With SIGN_PEM (a unified
-# PEM: private key + certificate, e.g. from
-#   rcodesign generate-self-signed-certificate --algorithm ecdsa \
-#     --person-name webmux --validity-days 3650 --pem-unified-file $(SIGN_PEM)
-# ) the app's identity is stable across builds — one Local Network prompt
-# and one Keychain prompt ever, not per update. Without it: ad-hoc, a new
-# identity per build. Without rcodesign the build stops: an unsigned zip
-# would install fine and then fail every connection. Keep the PEM out of
-# git and back it up: a new key is a new identity.
+# Signing happens on this Linux host with rcodesign (apple-codesign; put
+# the static binary on PATH). macOS 26.5+/27 identifies an app by its code
+# signature for Local Network privacy and Keychain access, so an unsigned
+# or unsignable app is denied every LAN connection. SIGN_PEM (unified PEM:
+# private key + certificate) gives a stable identity across builds; absent
+# → ad-hoc, a new identity per build; no rcodesign → the build stops rather
+# than ship a zip that installs fine and then fails every connection. The
+# PEM stays out of git. Setup, key handling, rationale: docs/signing.md.
 #
 # APP_ID overrides the bundle identifier (a fresh one makes macOS treat the
 # app as new, e.g. to get a clean Local Network prompt).
