@@ -39,25 +39,24 @@ client-test:     ## headless harness: profile store, IPC, tunnel state machine; 
 #     --person-name webmux --validity-days 3650 --pem-unified-file $(SIGN_PEM)
 # ) the app's identity is stable across builds — one Local Network prompt
 # and one Keychain prompt ever, not per update. Without it: ad-hoc, a new
-# identity per build. Without rcodesign: unsigned, and the zip's mac-sign.sh
-# has to be run on the Mac after installing. Keep the PEM out of git and
-# back it up: a new key is a new identity.
+# identity per build. Without rcodesign the build stops: an unsigned zip
+# would install fine and then fail every connection. Keep the PEM out of
+# git and back it up: a new key is a new identity.
 #
 # APP_ID overrides the bundle identifier (a fresh one makes macOS treat the
 # app as new, e.g. to get a clean Local Network prompt).
 APP_ID ?=
 SIGN_PEM ?= $(HOME)/.config/webmux/codesign.pem
 RCODESIGN := $(shell command -v rcodesign 2>/dev/null)
-client: client-test payload  ## build the arm64 .app zip (cross-builds from Linux; signed here if rcodesign is on PATH)
+client: client-test payload  ## build the signed arm64 .app zip (cross-builds from Linux; needs rcodesign on PATH)
+ifndef RCODESIGN
+	$(error rcodesign not on PATH — install it from https://github.com/indygreg/apple-platform-rs/releases (apple-codesign, linux-musl tarball) so the .app can be signed here)
+endif
 	cd electron && npx electron-builder --mac dir --arm64 $(if $(APP_ID),-c.appId=$(APP_ID),)
-ifdef RCODESIGN
 	$(RCODESIGN) sign $(if $(wildcard $(SIGN_PEM)),--pem-file $(SIGN_PEM),) electron/dist/mac-arm64/webmux.app 2>&1 | grep -vE "^(entering|leaving|signing|creating cryptographic)" || true
 	@echo "signed: $(if $(wildcard $(SIGN_PEM)),certificate $(SIGN_PEM) (stable identity),ad-hoc (identity changes per build; set SIGN_PEM for a stable one))"
-else
-	@echo "rcodesign not on PATH — shipping UNSIGNED; run mac-sign.sh from the zip on the Mac after installing"
-endif
 	cd electron && node pack-mac.js dist/mac-arm64/webmux.app \
-	  "dist/webmux-$$(node -p 'require("./package.json").version')$(if $(APP_ID),-$(subst .,_,$(APP_ID)),)-arm64-mac.zip" mac-sign.sh
+	  "dist/webmux-$$(node -p 'require("./package.json").version')$(if $(APP_ID),-$(subst .,_,$(APP_ID)),)-arm64-mac.zip"
 	@ls -lh electron/dist/*.zip
 
 clean:           ## remove client build output

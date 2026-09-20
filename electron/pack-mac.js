@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Zip a built webmux.app (electron-builder's `--mac dir` output) into the
-// release archive, keeping symlinks as symlinks.
+// Zip a built (and signed) webmux.app — electron-builder's `--mac dir`
+// output — into the release archive, keeping symlinks as symlinks. The
+// .app is the archive's only top-level entry, so Archive Utility expands
+// it straight to webmux.app rather than into a folder.
 //
 // electron-builder's own `--mac zip` target, when run on Linux, flattens
 // every symlink into a copy. An Electron .app is full of them (each
@@ -13,7 +15,7 @@
 // connection. Hence a zip writer of our own (no zip binary on the build
 // host, no zip library among the client's dependencies).
 //
-//   node pack-mac.js <app-dir> <out.zip> [extra files to add at the root…]
+//   node pack-mac.js <app-dir> <out.zip>
 //
 // Regular files are deflated; symlinks are stored with the Unix mode
 // 0120777 in the external attributes and the link target as data, which is
@@ -22,9 +24,9 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-const [appDir, outZip, ...extras] = process.argv.slice(2);
+const [appDir, outZip] = process.argv.slice(2);
 if (!appDir || !outZip) {
-  console.error('usage: node pack-mac.js <webmux.app> <out.zip> [extra files…]');
+  console.error('usage: node pack-mac.js <webmux.app> <out.zip>');
   process.exit(2);
 }
 
@@ -125,12 +127,6 @@ for (const e of walk(appDir, '')) {
     files++;
   }
 }
-for (const extra of extras) {
-  const st = fs.statSync(extra);
-  addEntry(path.basename(extra), fs.readFileSync(extra), 0o100000 | (st.mode & 0o7777), st.mtime, { deflate: true });
-  files++;
-}
-
 const cdStart = offset;
 for (const c of central) write(c);
 const cdSize = offset - cdStart;

@@ -87,10 +87,9 @@ xattr -dr com.apple.quarantine /Applications/webmux.app
 First launch asks for Local Network access (allow it) and Keychain access
 to the saved-password store (Always Allow). With a certificate-signed build
 that happens once; an ad-hoc build is a new identity every time, so it asks
-again after each update. Fallback if the build host had no rcodesign: run
-`sh mac-sign.sh` from the zip on the Mac, which signs the installed app
-ad-hoc (`sh mac-sign.sh "Apple Development"` for a keychain identity).
-`make client APP_ID=me.example.webmux2` builds under another bundle
+again after each update. The build refuses to run without rcodesign rather
+than ship an unsigned app that would install fine and then fail every
+connection. `make client APP_ID=me.example.webmux2` builds under another bundle
 identifier, which macOS treats as a brand-new app. The zip keeps the
 bundle's symlinks (electron-builder's own zip target flattens them on
 Linux, which breaks the frameworks' layout so badly that codesign refuses
@@ -378,8 +377,7 @@ electron/        macOS client: main.js (tunnels, views, IPC), deploy.js (push fl
                  lan.js (macOS Local Network probe + hint), connect.html /
                  header.html (client-owned pages), ui/ (the frontend), test/
                  (headless harness + lan.js unit tests), pack-mac.js (symlink-
-                 keeping zip of the built .app), mac-sign.sh (fallback: sign
-                 it on the Mac), payload/ (built)
+                 keeping zip of the signed .app), payload/ (built)
 server.js        remote API + WebSocket proxy (pushed to hosts as part of the payload)
 ptyhost.js       pty daemon; ptyhost-client.js is its control-socket client
 deploy/          build-payload.js (server tarball), remote-start.js (runs on the host)

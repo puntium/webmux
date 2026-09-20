@@ -239,7 +239,7 @@ server with the deployed payload on its next connect.)
 ```sh
 cd electron && npm install
 npm start            # dev run (any platform with a display)
-npm run dist         # dist/webmux-<version>-arm64-mac.zip (electron-builder --mac dir + pack-mac.js)
+npm run dist         # = make client: dist/webmux-<version>-arm64-mac.zip (electron-builder --mac dir → rcodesign → pack-mac.js)
 ```
 
 The zip is written by `pack-mac.js`, not electron-builder: its zip target
@@ -262,10 +262,11 @@ identity across builds, so the Local Network grant and the Keychain
 "webmux Safe Storage" ACL survive updates. Ad-hoc signing (no PEM) works
 too but is a new identity per build: every update re-prompts for both. The
 PEM lives outside the repo (`~/.config/webmux/codesign.pem`); back it up,
-a new key is a new identity. `mac-sign.sh` still ships in the zip as the
-fallback for a build host without rcodesign: run it on the Mac after
-installing. `make client APP_ID=<id>` builds under a different bundle
-identifier when macOS needs to see a brand-new app.
+a new key is a new identity. Without rcodesign on PATH the build stops
+instead of shipping an unsigned zip. `make client APP_ID=<id>` builds under
+a different bundle identifier when macOS needs to see a brand-new app. The
+zip's only top-level entry is the .app, so Archive Utility expands it in
+place rather than into a folder.
 
 Cross-building the zip from Linux works (no native modules in the client;
 electron-builder downloads the darwin Electron binary). Building on the Mac
