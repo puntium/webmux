@@ -250,6 +250,8 @@ const portByProfile = new Map(); // ephemeral picks, stable within this app run
 const lanWarmed = new Set(); // 'host:port' targets this process has reached once (see warmLocalNetwork)
 let quitting = false;
 
+const IS_MAC = process.platform === 'darwin';
+
 // macOS gates LAN connections behind a per-app grant (see lan.js). Elsewhere
 // the probe and the hint are noise; WEBMUX_LAN_PROBE=1 turns them on for the
 // headless harness.
@@ -260,6 +262,36 @@ const LAN_GATED = process.platform === 'darwin' || process.env.WEBMUX_LAN_PROBE 
 const LAN_GRANT_WAIT = Number(process.env.WEBMUX_LAN_GRANT_WAIT_MS) || 20000;
 const LAN_RECOVER_WAIT = Number(process.env.WEBMUX_LAN_RECOVER_WAIT_MS) || 180000;
 
+// App-level shortcuts (Connections, Reconnect, Log, Settings, host
+// switching). On macOS the application menu's accelerators handle them:
+// key equivalents go to the menu before the page sees them. On Linux it is
+// the other way round — a menu accelerator fires only for keys the page
+// left unhandled, and xterm consumes Ctrl+Shift+<letter> and Ctrl+<digit>
+// — so each view intercepts them in before-input-event, ahead of the page.
+// The menu still lists them (same strings) for discoverability.
+const APP_SHORTCUTS = {
+  'Ctrl+Shift+KeyO': () => userShow(null),
+  'Ctrl+Shift+KeyR': () => reconnectActive(),
+  'Ctrl+Shift+KeyL': () => openLogWindow(),
+  'Ctrl+Shift+BracketLeft': () => showAdjacent(-1),
+  'Ctrl+Shift+BracketRight': () => showAdjacent(1),
+  'Ctrl+Comma': () => chromeCmd('settings'),
+  ...Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`Ctrl+Digit${i + 1}`, () => {
+    const name = [...conns.keys()][i];
+    if (name) userShow(name);
+  }])),
+};
+function installAppShortcuts(webContents) {
+  if (IS_MAC) return;
+  webContents.on('before-input-event', (ev, input) => {
+    if (input.type !== 'keyDown' || !input.control || input.alt || input.meta) return;
+    const fn = APP_SHORTCUTS[`Ctrl+${input.shift ? 'Shift+' : ''}${input.code}`];
+    if (!fn) return;
+    ev.preventDefault();
+    fn();
+  });
+}
+
 function makeView() {
   const view = new WebContentsView({
     webPreferences: {
@@ -269,6 +301,7 @@ function makeView() {
       backgroundThrottling: false,
     },
   });
+  installAppShortcuts(view.webContents);
   // Terminal links open in the real browser; nothing may open in-window.
   view.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
@@ -1083,25 +1116,35 @@ const CHROME_EVENTS = {
 // shortcuts but doesn't register them (registerAccelerator: false): the
 // page handles the keys itself, so ⌘←/→ still move the caret in text
 // fields and the chords work without a round trip through main.
+//
+// The chord key is ⌘ on macOS and Alt on Linux (Super belongs to the
+// compositor there), with Ctrl standing in for ⌥ as the secondary modifier
+// — app.js chordModifiers is the other half of this table. On Linux
+// registerAccelerator is not honoured: the accelerators are real, but
+// Electron only fires them for keys the page left unhandled, and the page
+// consumes every chord (it swallows them in text fields), so the menu
+// click is never a second trigger.
+const MOD = IS_MAC ? 'Cmd' : 'Alt';
+const MOD2 = IS_MAC ? 'Alt' : 'Ctrl';
 const PANE_MENU = [
-  ['New Terminal', 'Cmd+Return', 'new-terminal'],
-  ['New Terminal Below', 'Alt+Cmd+Return', 'new-terminal-below'],
-  ['New File Browser', 'Shift+Cmd+Return', 'new-files'],
-  ['Close Pane', 'Cmd+W', 'close-pane'],
-  ['Full Window', 'Cmd+F', 'toggle-full'],
+  ['New Terminal', `${MOD}+Return`, 'new-terminal'],
+  ['New Terminal Below', `${MOD2}+${MOD}+Return`, 'new-terminal-below'],
+  ['New File Browser', `Shift+${MOD}+Return`, 'new-files'],
+  ['Close Pane', `${MOD}+W`, 'close-pane'],
+  ['Full Window', `${MOD}+F`, 'toggle-full'],
   null,
-  ['Focus Left', 'Cmd+Left', 'focus-left'],
-  ['Focus Right', 'Cmd+Right', 'focus-right'],
-  ['Focus Up', 'Cmd+Up', 'focus-up'],
-  ['Focus Down', 'Cmd+Down', 'focus-down'],
+  ['Focus Left', `${MOD}+Left`, 'focus-left'],
+  ['Focus Right', `${MOD}+Right`, 'focus-right'],
+  ['Focus Up', `${MOD}+Up`, 'focus-up'],
+  ['Focus Down', `${MOD}+Down`, 'focus-down'],
   null,
-  ['Move Left', 'Shift+Cmd+Left', 'move-column-left'],
-  ['Move Right', 'Shift+Cmd+Right', 'move-column-right'],
-  ['Move Pane Up', 'Shift+Cmd+Up', 'move-pane-up'],
-  ['Move Pane Down', 'Shift+Cmd+Down', 'move-pane-down'],
+  ['Move Left', `Shift+${MOD}+Left`, 'move-column-left'],
+  ['Move Right', `Shift+${MOD}+Right`, 'move-column-right'],
+  ['Move Pane Up', `Shift+${MOD}+Up`, 'move-pane-up'],
+  ['Move Pane Down', `Shift+${MOD}+Down`, 'move-pane-down'],
   null,
-  ['Merge Left', 'Alt+Cmd+Left', 'consume-expel-left'],
-  ['Merge Right', 'Alt+Cmd+Right', 'consume-expel-right'],
+  ['Merge Left', `${MOD2}+${MOD}+Left`, 'consume-expel-left'],
+  ['Merge Right', `${MOD2}+${MOD}+Right`, 'consume-expel-right'],
 ];
 const PANE_COMMANDS = new Set(PANE_MENU.filter(Boolean).map(([, , cmd]) => cmd));
 function chromeCmd(cmd) {
@@ -1291,6 +1334,11 @@ function createWindow() {
     height: 900,
     backgroundColor: windowBg(),
     title: 'webmux',
+    // Linux draws the application menu as a bar inside the window; the
+    // header strip already carries the actions, so hide it until a lone Alt
+    // tap (press and release with no other key) toggles it. Alt chords
+    // (Alt+Enter, Alt+W, …) don't count as a tap.
+    autoHideMenuBar: !IS_MAC,
   });
 
   headerView = makeView();
@@ -1349,6 +1397,7 @@ function openLogWindow() {
     if (logWin && !logWin.webContents.isDestroyed()) logWin.webContents.send('log', log.withLine(entry));
   });
   logWin.on('closed', () => { unsubscribe(); logWin = null; });
+  installAppShortcuts(logWin.webContents);
   logWin.loadFile('logs.html');
 }
 
@@ -1362,18 +1411,21 @@ function buildMenu() {
         { label: 'Connections…', accelerator: 'CmdOrCtrl+Shift+O', click: () => userShow(null) },
         { label: 'Reconnect', accelerator: 'CmdOrCtrl+Shift+R', click: reconnectActive },
         { label: 'Open Config File', click: () => shell.openPath(configFile()) },
-        // ⌃⌘L rather than ⌘⇧L: the page's pane chords use ⌘⇧ + hjkl.
-        { label: 'Connection Log…', accelerator: 'Ctrl+Cmd+L', click: openLogWindow },
+        // ⌃⌘L rather than ⌘⇧L: the page's pane chords use ⌘⇧ + hjkl. (On
+        // Linux the chords are Alt-based, so Ctrl+Shift+L is free.)
+        { label: 'Connection Log…', accelerator: IS_MAC ? 'Ctrl+Cmd+L' : 'Ctrl+Shift+L', click: openLogWindow },
         { type: 'separator' },
         // Opens the page's settings panel; needs a host page on screen.
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => chromeCmd('settings') },
         { type: 'separator' },
         // Hide / Hide Others lose their ⌘H / ⌥⌘H accelerators: those are
         // pane chords (focus left / merge left with the vim key) in the page.
-        { label: 'Hide webmux', click: () => app.hide() },
-        { label: 'Hide Others', click: () => Menu.sendActionToFirstResponder('hideOtherApplications:') },
-        { role: 'unhide' },
-        { type: 'separator' },
+        ...(IS_MAC ? [
+          { label: 'Hide webmux', click: () => app.hide() },
+          { label: 'Hide Others', click: () => Menu.sendActionToFirstResponder('hideOtherApplications:') },
+          { role: 'unhide' },
+          { type: 'separator' },
+        ] : []),
         { role: 'quit' },
       ],
     },
@@ -1403,7 +1455,7 @@ function buildMenu() {
       label: 'Window',
       submenu: [
         { role: 'minimize' },
-        { role: 'zoom' },
+        ...(IS_MAC ? [{ role: 'zoom' }] : []),
         { type: 'separator' },
         // Cmd+Shift+[ / ] cycle through connected hosts in pill order.
         { label: 'Previous Host', accelerator: 'CmdOrCtrl+Shift+[', click: () => showAdjacent(-1) },
@@ -1429,6 +1481,9 @@ app.whenReady().then(() => {
     version: app.getVersion(),
     electron: process.versions.electron,
     platform: `${process.platform}-${process.arch}`,
+    // Linux: which keyring backs safeStorage (gnome_libsecret, kwallet6, …;
+    // basic_text means passwords would be stored obfuscated, not encrypted).
+    ...(process.platform === 'linux' ? { passwordStore: safeStorage.getSelectedStorageBackend?.() } : {}),
     logFile: log.logFile(),
   });
   loadStore();

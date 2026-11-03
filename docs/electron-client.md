@@ -1,8 +1,13 @@
 # Electron client over SSH
 
-The native macOS client for webmux — and the only way to connect from
-another machine: an Electron shell that reaches the server through an SSH
-tunnel to its unix socket. server.js stays the remote API surface (file
+The native client for webmux (macOS and Linux) — and the only way to
+connect from another machine: an Electron shell that reaches the server
+through an SSH tunnel to its unix socket. The notes below are written from
+the macOS build; the Linux differences (Alt/Ctrl chords in place of ⌘, the
+OS keyring in place of the Keychain, app shortcuts intercepted in main via
+before-input-event because Linux menu accelerators lose to the page) are
+in README.md › Linux and in the comments at main.js `PANE_MENU` /
+`APP_SHORTCUTS` and app.js `chordModifiers`. server.js stays the remote API surface (file
 browser, paste/clipboard shims, future endpoints); ptyhost stays the session
 owner; the frontend (`electron/ui/` + the @xterm browser packages) ships
 inside the client and is served locally on the `webmux://` scheme — only

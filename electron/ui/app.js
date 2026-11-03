@@ -10,7 +10,8 @@
    keyboard-driven (⌘↩ new terminal, ⌥⌘↩ terminal below, ⌘⇧↩ new file browser, ⌘W close, ⌘F
    full-window toggle, ⌘+arrows/hjkl to focus, ⇧⌘ to move a pane within
    its stack, out of it into a column of its own, or its whole column, ⌥⌘
-   to merge it into the neighbouring column — see paneCommandForKey).
+   to merge it into the neighbouring column — see paneCommandForKey; on
+   Linux the chord key is Alt and Ctrl stands in for ⌥).
    Structural changes animate: panes travel to their new places while
    their stacks and columns close up or make room (animateStrip), and a
    closing pane collapses in place (animateRemoval).
@@ -1504,38 +1505,59 @@ const PANE_COMMANDS = {
   'consume-expel-right': () => mergeInto(1),
 };
 
-// ⌘ bindings. Letters go by ev.code: ⌥ on macOS turns ⌥h into '˙' in
-// ev.key, and shift into 'H'. ⌘H / ⌥⌘H / ⌘⇧L are freed in the client's
-// menu (Hide, Hide Others and the Connection Log lost their accelerators)
-// so they reach the page.
+// Pane chords. ⌘ on macOS. On Linux ⌘ is Super, which belongs to the
+// compositor (GNOME takes Super+arrows, Super+1…9, Super+H; so do most
+// tiling WMs), so Alt is the chord key there, with Ctrl standing in for ⌥
+// as the secondary modifier: ⌥⌘↩ is Ctrl+Alt+Enter, ⇧⌘← is Shift+Alt+Left.
+// Letters go by ev.code: ⌥ on macOS turns ⌥h into '˙' in ev.key, and shift
+// into 'H'. ⌘H / ⌥⌘H / ⌘⇧L are freed in the client's menu (Hide, Hide
+// Others and the Connection Log lost their accelerators) so they reach the
+// page.
+const IS_MAC = /mac/i.test(navigator.platform);
+// null when ev is not a chord; else which secondary modifiers ride on it.
+function chordModifiers(ev) {
+  if (IS_MAC) {
+    if (!ev.metaKey || ev.ctrlKey) return null;
+    return { second: ev.altKey, shift: ev.shiftKey };
+  }
+  if (!ev.altKey || ev.metaKey) return null;
+  return { second: ev.ctrlKey, shift: ev.shiftKey };
+}
 const DIR_BY_KEY = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
 const DIR_BY_CODE = { KeyH: 'left', KeyL: 'right', KeyK: 'up', KeyJ: 'down' };
-function paneCommandForKey(ev) {
+function paneCommandForKey(ev, { second, shift }) {
   if (ev.key === 'Enter') {
-    if (ev.altKey) return ev.shiftKey ? null : 'new-terminal-below';
-    return ev.shiftKey ? 'new-files' : 'new-terminal';
+    if (second) return shift ? null : 'new-terminal-below';
+    return shift ? 'new-files' : 'new-terminal';
   }
-  if (ev.code === 'KeyW') return ev.altKey || ev.shiftKey ? null : 'close-pane';
-  if (ev.code === 'KeyF') return ev.altKey || ev.shiftKey ? null : 'toggle-full';
+  if (ev.code === 'KeyW') return second || shift ? null : 'close-pane';
+  if (ev.code === 'KeyF') return second || shift ? null : 'toggle-full';
   const dir = DIR_BY_KEY[ev.key] || DIR_BY_CODE[ev.code];
   if (!dir) return null;
   const horizontal = dir === 'left' || dir === 'right';
-  if (ev.altKey) return horizontal ? `consume-expel-${dir}` : `move-pane-${dir}`;
-  if (ev.shiftKey) return horizontal ? `move-column-${dir}` : `move-pane-${dir}`;
+  if (second) return horizontal ? `consume-expel-${dir}` : `move-pane-${dir}`;
+  if (shift) return horizontal ? `move-column-${dir}` : `move-pane-${dir}`;
   return `focus-${dir}`;
 }
 
 // Capture phase on window: runs before xterm's own keydown handling on its
 // hidden textarea, so preventDefault + stopPropagation keeps the chord out
 // of the pty. Real text fields (settings, rename box) keep ⌘←/→ as
-// line-start/end; modals keep their keys too.
+// line-start/end; modals keep their keys too. On Linux the client's Pane
+// menu registers the same chords as real accelerators, and Electron fires
+// those for any key the page leaves unhandled — so there a chord in a field
+// or modal is swallowed rather than moving focus out from under it.
 window.addEventListener('keydown', (ev) => {
-  if (!ev.metaKey || ev.ctrlKey) return;
+  const mods = chordModifiers(ev);
+  if (!mods) return;
   const t = ev.target;
-  if (t instanceof HTMLInputElement || t.isContentEditable
-      || (t instanceof HTMLTextAreaElement && !t.classList.contains('xterm-helper-textarea'))) return;
-  if (document.querySelector('.modal-overlay')) return;
-  const cmd = paneCommandForKey(ev);
+  const inField = t instanceof HTMLInputElement || t.isContentEditable
+    || (t instanceof HTMLTextAreaElement && !t.classList.contains('xterm-helper-textarea'));
+  if (inField || document.querySelector('.modal-overlay')) {
+    if (!IS_MAC && paneCommandForKey(ev, mods)) ev.preventDefault();
+    return;
+  }
+  const cmd = paneCommandForKey(ev, mods);
   if (!cmd) return;
   ev.preventDefault();
   ev.stopPropagation();

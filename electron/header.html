@@ -149,6 +149,21 @@
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+  // Shortcut hints: the markup is written in macOS glyphs; on Linux the pane
+  // chords are Alt-based and the app shortcuts Ctrl-based (main.js PANE_MENU
+  // and APP_SHORTCUTS), so the tooltips are rewritten at load.
+  const IS_MAC = /mac/i.test(navigator.platform);
+  const hostKey = (n) => (IS_MAC ? `⌘${n}` : `Ctrl+${n}`);
+  if (!IS_MAC) {
+    const linux = {
+      newTermBtn: 'New terminal in a new column (Alt+Enter)',
+      newFilesBtn: 'New file browser in a new column (Shift+Alt+Enter)',
+      settingsBtn: 'Settings (Ctrl+,)',
+      connectionsBtn: 'Manage connections (Ctrl+Shift+O)',
+    };
+    for (const [id, title] of Object.entries(linux)) document.getElementById(id).title = title;
+  }
+
   let snap = { active: null, connections: [] };
 
   const stateTip = (c) => ({
@@ -163,7 +178,7 @@
     document.getElementById('pills').innerHTML = snap.connections.map((c, i) => `
       <span class="pill${c.name === snap.active ? ' active' : ''}"
             data-show="${esc(c.name)}" draggable="true"
-            title="${esc(c.name)} — ${esc(stateTip(c))}${i < 9 ? ` (⌘${i + 1})` : ''}">
+            title="${esc(c.name)} — ${esc(stateTip(c))}${i < 9 ? ` (${hostKey(i + 1)})` : ''}">
         <span class="dot ${esc(c.state)}"></span>${esc(c.name)}
         <button class="x" title="Disconnect" data-x="${esc(c.name)}">✕</button>
       </span>`).join('');

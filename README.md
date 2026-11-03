@@ -66,7 +66,43 @@ liveness), `docs/push-deploy.md` (connect-is-deploy flow),
 ```sh
 make client-deps   # cd electron && npm install
 make client        # harness → server payload → electron/dist/webmux-<version>-arm64-mac.zip
+make client-linux  # harness → server payload → electron/dist/webmux-<version>-x86_64-linux.AppImage + -x64-linux.tar.gz
 ```
+
+### Linux
+
+The same client runs on Linux; the shortcuts change because Super (⌘'s
+counterpart) belongs to the compositor there: the pane chords use **Alt**
+(Alt+Enter new terminal, Alt+W close, Alt+F full window, Alt+arrows or
+Alt+hjkl to focus, Shift+Alt to move, Ctrl+Alt where macOS uses ⌥⌘), and
+the app shortcuts use **Ctrl** (Ctrl+Shift+O connections, Ctrl+Shift+R
+reconnect, Ctrl+Shift+L log, Ctrl+, settings, Ctrl+1…9 and Ctrl+Shift+[ ]
+to switch hosts). Saved passwords go through the OS keyring (GNOME Keyring
+or KWallet via libsecret; the startup log line records which backend was
+picked). The menu bar is hidden; a lone Alt tap shows it (Esc or another
+tap hides it again), and Alt chords don't. Native Wayland is used when the
+Electron build enables it (nixpkgs' does); otherwise set
+`ELECTRON_OZONE_PLATFORM_HINT=auto`.
+
+To run from source during development:
+
+```sh
+make payload                      # the server payload the client pushes on connect
+make client-run                   # electron/node_modules/.bin/electron .
+```
+
+`client-run` uses an `electron` found on PATH, else the binary npm
+downloaded. That binary needs the usual FHS libraries (NSS, GTK 3, …) on
+the loader path, and on NixOS it won't start (`libnspr4.so: cannot open
+shared object file`), so install the nixpkgs one — `pkgs.electron` (plus
+`gnumake` and `nodejs`) in `environment.systemPackages`, or a dev shell —
+and `make client-run` picks it up. One-off: `make client-run
+ELECTRON=$(nix build --print-out-paths nixpkgs#electron)/bin/electron`.
+
+`make client-linux` produces an AppImage (needs FUSE; on NixOS run it with
+`appimage-run`) and a tar.gz of the unpacked app whose `./webmux` is the
+same npm-style binary — so on NixOS the nixpkgs Electron + source tree is
+the practical install. There is no code signing on Linux.
 
 `make client` cross-builds from Linux (no native modules in the client)
 and signs the app there with rcodesign — a stable identity when the
