@@ -21,7 +21,21 @@ payload:         ## build the auto-deploy server payload the client pushes over 
 client-deps:     ## install client dependencies
 	cd electron && npm install
 
-client-test:     ## headless harness: profile store, IPC, tunnel state machine; lan.js unit tests
+# File-level view of the same two steps, so client-run / client-test can
+# demand them and stay incremental: the client's node_modules (electron,
+# @xterm, marked — needed even with an electron on PATH) and the server
+# payload main.js looks for at startup (missing → "no server payload
+# bundled" on connect). The payload rule rebuilds when its inputs change;
+# `make payload` forces it.
+PAYLOAD_INPUTS := package.json deploy/build-payload.js deploy/remote-start.js \
+  server.js ptyhost.js ptyhost-client.js $(shell find shims -type f)
+electron/node_modules: electron/package.json electron/package-lock.json
+	cd electron && npm install
+	@touch $@
+electron/payload/payload.json: $(PAYLOAD_INPUTS)
+	node deploy/build-payload.js
+
+client-test: electron/node_modules  ## headless harness: profile store, IPC, tunnel state machine; lan.js unit tests
 	cd electron && node test/lan.js && node test/harness.js
 
 # electron-builder's own zip target flattens symlinks when run on Linux,
@@ -60,10 +74,10 @@ endif
 # environment.systemPackages or a dev shell); otherwise the binary npm
 # downloaded, which needs the usual FHS libraries (NSS, GTK 3, …) on the
 # loader path — on NixOS it fails on libnspr4.so. ELECTRON=… overrides
-# either (an absolute path or a name on PATH). The server payload must exist
-# (make payload) before the first connect.
+# either (an absolute path or a name on PATH). Installs the client deps and
+# builds the server payload first if they are missing or stale.
 ELECTRON ?= $(shell command -v electron 2>/dev/null || echo ./node_modules/.bin/electron)
-client-run: ## run the client from source (ELECTRON=… picks the electron binary)
+client-run: electron/node_modules electron/payload/payload.json ## run the client from source (ELECTRON=… picks the electron binary)
 	cd electron && $(ELECTRON) .
 
 # Unsigned Linux build: an AppImage (any distro with FUSE; NixOS: appimage-run)

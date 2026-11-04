@@ -170,7 +170,7 @@
     starts it — updates are pushed the same way, and sessions survive them.
     Connect to several hosts at once — each connection gets a pill in the
     header bar above (<span class="mac">⌘1…⌘9 or ⌘⇧[ ] switch, ⌘⇧O returns here</span><span
-    class="linux">Ctrl+1…9 or Ctrl+Shift+[ ] switch, Ctrl+Shift+O returns here</span>). Key auth needs no
+    class="linux">Ctrl+1…9 or Ctrl+PageUp/PageDown switch, Ctrl+Shift+O returns here</span>). Key auth needs no
     prompt (use ssh-agent for passphrases); or save a password per profile —
     it is stored encrypted via the <span class="mac">macOS Keychain</span><span class="linux">OS keyring
     (GNOME Keyring or KWallet via libsecret)</span> and fed to ssh through an
@@ -185,7 +185,7 @@
   // .mac / .linux); only the one for this platform shows.
   const IS_MAC = /mac/i.test(navigator.platform);
   document.documentElement.classList.add(IS_MAC ? 'is-mac' : 'is-linux');
-  if (!IS_MAC) $('logBtn').title = 'Connection log (Ctrl+Shift+L)';
+  if (!IS_MAC) $('logBtn').title = 'Connection log (Ctrl+Shift+G)';
 
   // Client-wide settings: only the color scheme matters to this page.
   const applySettings = (s) => { document.documentElement.dataset.theme = s.theme; };

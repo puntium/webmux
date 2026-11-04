@@ -150,14 +150,14 @@
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   // Shortcut hints: the markup is written in macOS glyphs; on Linux the pane
-  // chords are Alt-based and the app shortcuts Ctrl-based (main.js PANE_MENU
-  // and APP_SHORTCUTS), so the tooltips are rewritten at load.
+  // chords are Ctrl+Shift-based and the app shortcuts Ctrl-based (main.js
+  // PANE_MENU and APP_SHORTCUTS), so the tooltips are rewritten at load.
   const IS_MAC = /mac/i.test(navigator.platform);
   const hostKey = (n) => (IS_MAC ? `⌘${n}` : `Ctrl+${n}`);
   if (!IS_MAC) {
     const linux = {
-      newTermBtn: 'New terminal in a new column (Alt+Enter)',
-      newFilesBtn: 'New file browser in a new column (Shift+Alt+Enter)',
+      newTermBtn: 'New terminal in a new column (Ctrl+Shift+Enter)',
+      newFilesBtn: 'New file browser in a new column (Ctrl+Shift+B)',
       settingsBtn: 'Settings (Ctrl+,)',
       connectionsBtn: 'Manage connections (Ctrl+Shift+O)',
     };

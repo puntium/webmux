@@ -1457,13 +1457,11 @@ function commitMove() {
   tiles.get(focusedId)?.focus();
 }
 
-// ⇧⌘←/→: a pane sharing a column splits out into a column of its own on
-// that side; a pane alone in its column takes the column with it,
-// swapping places with the neighbouring column.
+// ⌥⌘←/→: the whole column (its stack included) swaps places with the
+// neighbouring column on that side (niri's move-column).
 function moveColumn(dir) {
   const ci = columnIndexOf(focusedId);
   if (ci === -1) return;
-  if (columns[ci].panes.length > 1) return expel(dir);
   const ti = ci + dir;
   if (ti < 0 || ti >= columns.length) return;
   [columns[ci], columns[ti]] = [columns[ti], columns[ci]];
@@ -1478,7 +1476,7 @@ function expel(dir) {
   commitMove();
 }
 
-// ⇧⌘↑/↓ and ⌥⌘↑/↓: the pane swaps places within its stack.
+// ⌥⌘↑/↓ (⇧⌘↑/↓ on macOS too): the pane swaps places within its stack.
 function movePane(dir) {
   const col = columnOf(focusedId);
   if (!col) return;
@@ -1490,18 +1488,18 @@ function movePane(dir) {
   commitMove();
 }
 
-// ⌥⌘←/→: the pane merges into the neighbouring column on that side (at
-// the bottom), leaving its stack in one step; a column it empties goes
-// with it. With no column on that side a stacked pane splits out into a
-// new column there instead, and a lone one has nowhere to go.
-function mergeInto(dir) {
+// ⌘[ / ⌘]: niri's consume-or-expel. A pane sharing a column first splits
+// out into a column of its own on that side; pressed again (now alone) it
+// merges into the neighbouring column on that side, at the bottom, and
+// the column it leaves empty goes away. A lone pane with no column on
+// that side has nowhere to go. Two taps thus carry a stacked pane into the
+// next column, each step visible.
+function consumeOrExpel(dir) {
   const ci = columnIndexOf(focusedId);
   if (ci === -1) return;
+  if (columns[ci].panes.length > 1) return expel(dir);
   const target = columns[ci + dir];
-  if (!target) {
-    if (columns[ci].panes.length > 1) expel(dir);
-    return;
-  }
+  if (!target) return;
   removeFromColumn(focusedId);
   insertIntoColumn(target, focusedId);
   commitMove();
@@ -1545,18 +1543,21 @@ const PANE_COMMANDS = {
   'move-column-right': () => moveColumn(1),
   'move-pane-up': () => movePane(-1),
   'move-pane-down': () => movePane(1),
-  'consume-expel-left': () => mergeInto(-1),
-  'consume-expel-right': () => mergeInto(1),
+  'consume-expel-left': () => consumeOrExpel(-1),
+  'consume-expel-right': () => consumeOrExpel(1),
 };
 
-// Pane chords. ⌘ on macOS. On Linux ⌘ is Super, which belongs to the
-// compositor (GNOME takes Super+arrows, Super+1…9, Super+H; so do most
-// tiling WMs), so Alt is the chord key there, with Ctrl standing in for ⌥
-// as the secondary modifier: ⌥⌘↩ is Ctrl+Alt+Enter, ⇧⌘← is Shift+Alt+Left.
-// Letters go by ev.code: ⌥ on macOS turns ⌥h into '˙' in ev.key, and shift
-// into 'H'. ⌘H / ⌥⌘H / ⌘⇧L are freed in the client's menu (Hide, Hide
-// Others and the Connection Log lost their accelerators) so they reach the
-// page.
+// Pane chords. ⌘ on macOS, with ⌥ as the secondary modifier (⌥⌘↩, ⌥⌘←)
+// and ⇧ for the shifted variants (⌘⇧↩; ⇧⌘↑/↓ doubles ⌥⌘↑/↓). On Linux ⌘
+// is Super, which belongs to the compositor (GNOME takes Super+arrows,
+// Super+1…9, Super+H; so do most tiling WMs), so the chord is Ctrl+Shift —
+// what other Linux terminals use for their own keys — with Alt standing in
+// for ⌥: ⌥⌘↩ is Ctrl+Shift+Alt+Enter. Shift is spent on the chord itself
+// there, so the shifted variants don't exist: the file browser gets
+// Ctrl+Shift+B instead. Letters and brackets go by ev.code: ⌥ on macOS turns
+// ⌥h into '˙' in ev.key, shift turns '[' into '{'. ⌘H / ⌥⌘H / ⌘⇧L are freed
+// in the client's menu (Hide, Hide Others and the Connection Log lost their
+// accelerators) so they reach the page.
 const IS_MAC = /mac/i.test(navigator.platform);
 // null when ev is not a chord; else which secondary modifiers ride on it.
 function chordModifiers(ev) {
@@ -1564,8 +1565,8 @@ function chordModifiers(ev) {
     if (!ev.metaKey || ev.ctrlKey) return null;
     return { second: ev.altKey, shift: ev.shiftKey };
   }
-  if (!ev.altKey || ev.metaKey) return null;
-  return { second: ev.ctrlKey, shift: ev.shiftKey };
+  if (!ev.ctrlKey || !ev.shiftKey || ev.metaKey) return null;
+  return { second: ev.altKey, shift: false };
 }
 const DIR_BY_KEY = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
 const DIR_BY_CODE = { KeyH: 'left', KeyL: 'right', KeyK: 'up', KeyJ: 'down' };
@@ -1574,13 +1575,17 @@ function paneCommandForKey(ev, { second, shift }) {
     if (second) return shift ? null : 'new-terminal-below';
     return shift ? 'new-files' : 'new-terminal';
   }
-  if (ev.code === 'KeyW') return second || shift ? null : 'close-pane';
-  if (ev.code === 'KeyF') return second || shift ? null : 'toggle-full';
+  const plain = !second && !shift;
+  if (ev.code === 'KeyW') return plain ? 'close-pane' : null;
+  if (ev.code === 'KeyF') return plain ? 'toggle-full' : null;
+  if (ev.code === 'KeyB') return plain && !IS_MAC ? 'new-files' : null;
+  if (ev.code === 'BracketLeft') return plain ? 'consume-expel-left' : null;
+  if (ev.code === 'BracketRight') return plain ? 'consume-expel-right' : null;
   const dir = DIR_BY_KEY[ev.key] || DIR_BY_CODE[ev.code];
   if (!dir) return null;
   const horizontal = dir === 'left' || dir === 'right';
-  if (second) return horizontal ? `consume-expel-${dir}` : `move-pane-${dir}`;
-  if (shift) return horizontal ? `move-column-${dir}` : `move-pane-${dir}`;
+  if (second) return horizontal ? `move-column-${dir}` : `move-pane-${dir}`;
+  if (shift) return horizontal ? null : `move-pane-${dir}`;
   return `focus-${dir}`;
 }
 

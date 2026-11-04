@@ -72,15 +72,20 @@ make client-linux  # harness → server payload → electron/dist/webmux-<versio
 ### Linux
 
 The same client runs on Linux; the shortcuts change because Super (⌘'s
-counterpart) belongs to the compositor there: the pane chords use **Alt**
-(Alt+Enter new terminal, Alt+W close, Alt+F full window, Alt+arrows or
-Alt+hjkl to focus, Shift+Alt to move, Ctrl+Alt where macOS uses ⌥⌘), and
-the app shortcuts use **Ctrl** (Ctrl+Shift+O connections, Ctrl+Shift+R
-reconnect, Ctrl+Shift+L log, Ctrl+, settings, Ctrl+1…9 and Ctrl+Shift+[ ]
-to switch hosts). Saved passwords go through the OS keyring (GNOME Keyring
+counterpart) belongs to the compositor there: the pane chords use
+**Ctrl+Shift**, as other Linux terminals do (Ctrl+Shift+Enter new terminal,
+Ctrl+Shift+B file browser, Ctrl+Shift+W close, Ctrl+Shift+F full window,
+Ctrl+Shift+arrows or Ctrl+Shift+hjkl to focus, Ctrl+Shift+[ ] to expel or
+merge, Ctrl+Shift+Alt where macOS uses ⌥⌘ — ⇧ is spent on the chord, so
+⌘⇧↩ has no counterpart). The app shortcuts use **Ctrl** (Ctrl+Shift+O
+connections, Ctrl+Shift+R reconnect, Ctrl+Shift+G log, Ctrl+, settings,
+Ctrl+1…9 and Ctrl+PageUp/PageDown to switch hosts). GNOME binds
+Ctrl+Shift+Alt+arrows itself (move window to workspace), so there the
+vim letters are the way to move columns and panes. Ctrl+V / Ctrl+Shift+V
+paste as before. Saved passwords go through the OS keyring (GNOME Keyring
 or KWallet via libsecret; the startup log line records which backend was
 picked). The menu bar is hidden; a lone Alt tap shows it (Esc or another
-tap hides it again), and Alt chords don't. Native Wayland is used when the
+tap hides it again), and chords don't. Native Wayland is used when the
 Electron build enables it (nixpkgs' does); otherwise set
 `ELECTRON_OZONE_PLATFORM_HINT=auto`.
 
@@ -233,13 +238,13 @@ accent border; its title bar spans the pane's width.
 | ⌘W | close the focused pane (kills a terminal's session, no confirmation) |
 | ⌘F | toggle the focused pane to the whole window; a stacked pane first splits out into its own column |
 | ⌘← → ↑ ↓ or ⌘h j k l | move focus between columns / within a stack (each column remembers its active pane) |
-| ⇧⌘← → | a pane sharing a column splits out into its own column on that side; a pane alone in its column moves the whole column left / right |
-| ⇧⌘↑ ↓ or ⌥⌘↑ ↓ | move the pane up / down within its stack |
-| ⌥⌘← → | merge the pane into the neighbouring column on that side (leaving its stack in one step; a column it empties goes away); with no column there, a stacked pane splits out instead |
+| ⌘[ ⌘] | expel or merge, as in niri: a pane sharing a column splits out into its own column on that side; a pane alone in its column merges into the neighbouring column on that side (at the bottom; the column it empties goes away). Two taps carry a stacked pane into the next column |
+| ⌥⌘← → | move the whole column (stack and all) left / right, swapping with its neighbour |
+| ⌥⌘↑ ↓ or ⇧⌘↑ ↓ | move the pane up / down within its stack |
 
 The same commands sit in the client's **Pane** menu. In the client, ⌘H /
 ⌥⌘H (Hide) and ⌘⇧L (Connection Log, now ⌃⌘L) gave up their shortcuts to
-make room for the vim keys. Other pointers:
+make room for the page's chords. Other pointers:
 
 - **+ New terminal** / **+ Files** in the header do what ⌘↩ / ⌘⇧↩ do.
 - Drag the divider between stacked panes to resize them; widths follow the

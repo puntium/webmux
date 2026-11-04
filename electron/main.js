@@ -268,13 +268,18 @@ const LAN_RECOVER_WAIT = Number(process.env.WEBMUX_LAN_RECOVER_WAIT_MS) || 18000
 // the other way round — a menu accelerator fires only for keys the page
 // left unhandled, and xterm consumes Ctrl+Shift+<letter> and Ctrl+<digit>
 // — so each view intercepts them in before-input-event, ahead of the page.
-// The menu still lists them (same strings) for discoverability.
+// The menu still lists them (same strings) for discoverability. They win
+// over the page, so none may be a pane chord (Ctrl+Shift + Enter, W, F, B,
+// hjkl, arrows, brackets): the log is Ctrl+Shift+G rather than ⌘⇧L's
+// Ctrl+Shift+L (L is the vim key for focus-right), and the hosts cycle on
+// Ctrl+PageUp/PageDown — the tab keys of GNOME Terminal and friends —
+// rather than ⌘⇧[ ]'s Ctrl+Shift+[ ] (the consume-or-expel chords).
 const APP_SHORTCUTS = {
   'Ctrl+Shift+KeyO': () => userShow(null),
   'Ctrl+Shift+KeyR': () => reconnectActive(),
-  'Ctrl+Shift+KeyL': () => openLogWindow(),
-  'Ctrl+Shift+BracketLeft': () => showAdjacent(-1),
-  'Ctrl+Shift+BracketRight': () => showAdjacent(1),
+  'Ctrl+Shift+KeyG': () => openLogWindow(),
+  'Ctrl+PageUp': () => showAdjacent(-1),
+  'Ctrl+PageDown': () => showAdjacent(1),
   'Ctrl+Comma': () => chromeCmd('settings'),
   ...Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`Ctrl+Digit${i + 1}`, () => {
     const name = [...conns.keys()][i];
@@ -1117,19 +1122,21 @@ const CHROME_EVENTS = {
 // page handles the keys itself, so ⌘←/→ still move the caret in text
 // fields and the chords work without a round trip through main.
 //
-// The chord key is ⌘ on macOS and Alt on Linux (Super belongs to the
-// compositor there), with Ctrl standing in for ⌥ as the secondary modifier
-// — app.js chordModifiers is the other half of this table. On Linux
-// registerAccelerator is not honoured: the accelerators are real, but
-// Electron only fires them for keys the page left unhandled, and the page
-// consumes every chord (it swallows them in text fields), so the menu
-// click is never a second trigger.
-const MOD = IS_MAC ? 'Cmd' : 'Alt';
-const MOD2 = IS_MAC ? 'Alt' : 'Ctrl';
+// The chord key is ⌘ on macOS and Ctrl+Shift on Linux (Super belongs to
+// the compositor there), with Alt standing in for ⌥ as the secondary
+// modifier — app.js chordModifiers is the other half of this table. Shift
+// is part of the Linux chord, so ⌘⇧↩ has no counterpart there and the file
+// browser sits on Ctrl+Shift+B instead. On Linux registerAccelerator is
+// not honoured: the accelerators are real, but Electron only fires them
+// for keys the page left unhandled, and the page consumes every chord (it
+// swallows them in text fields), so the menu click is never a second
+// trigger.
+const MOD = IS_MAC ? 'Cmd' : 'Ctrl+Shift';
+const MOD2 = 'Alt';
 const PANE_MENU = [
   ['New Terminal', `${MOD}+Return`, 'new-terminal'],
   ['New Terminal Below', `${MOD2}+${MOD}+Return`, 'new-terminal-below'],
-  ['New File Browser', `Shift+${MOD}+Return`, 'new-files'],
+  ['New File Browser', IS_MAC ? 'Shift+Cmd+Return' : 'Ctrl+Shift+B', 'new-files'],
   ['Close Pane', `${MOD}+W`, 'close-pane'],
   ['Full Window', `${MOD}+F`, 'toggle-full'],
   null,
@@ -1138,13 +1145,13 @@ const PANE_MENU = [
   ['Focus Up', `${MOD}+Up`, 'focus-up'],
   ['Focus Down', `${MOD}+Down`, 'focus-down'],
   null,
-  ['Move Left', `Shift+${MOD}+Left`, 'move-column-left'],
-  ['Move Right', `Shift+${MOD}+Right`, 'move-column-right'],
-  ['Move Pane Up', `Shift+${MOD}+Up`, 'move-pane-up'],
-  ['Move Pane Down', `Shift+${MOD}+Down`, 'move-pane-down'],
+  ['Expel or Merge Left', `${MOD}+[`, 'consume-expel-left'],
+  ['Expel or Merge Right', `${MOD}+]`, 'consume-expel-right'],
   null,
-  ['Merge Left', `${MOD2}+${MOD}+Left`, 'consume-expel-left'],
-  ['Merge Right', `${MOD2}+${MOD}+Right`, 'consume-expel-right'],
+  ['Move Column Left', `${MOD2}+${MOD}+Left`, 'move-column-left'],
+  ['Move Column Right', `${MOD2}+${MOD}+Right`, 'move-column-right'],
+  ['Move Pane Up', `${MOD2}+${MOD}+Up`, 'move-pane-up'],
+  ['Move Pane Down', `${MOD2}+${MOD}+Down`, 'move-pane-down'],
 ];
 const PANE_COMMANDS = new Set(PANE_MENU.filter(Boolean).map(([, , cmd]) => cmd));
 function chromeCmd(cmd) {
@@ -1336,8 +1343,8 @@ function createWindow() {
     title: 'webmux',
     // Linux draws the application menu as a bar inside the window; the
     // header strip already carries the actions, so hide it until a lone Alt
-    // tap (press and release with no other key) toggles it. Alt chords
-    // (Alt+Enter, Alt+W, …) don't count as a tap.
+    // tap (press and release with no other key) toggles it. Chords with Alt
+    // in them (Ctrl+Shift+Alt+Enter, …) don't count as a tap.
     autoHideMenuBar: !IS_MAC,
   });
 
@@ -1411,15 +1418,16 @@ function buildMenu() {
         { label: 'Connections…', accelerator: 'CmdOrCtrl+Shift+O', click: () => userShow(null) },
         { label: 'Reconnect', accelerator: 'CmdOrCtrl+Shift+R', click: reconnectActive },
         { label: 'Open Config File', click: () => shell.openPath(configFile()) },
-        // ⌃⌘L rather than ⌘⇧L: the page's pane chords use ⌘⇧ + hjkl. (On
-        // Linux the chords are Alt-based, so Ctrl+Shift+L is free.)
-        { label: 'Connection Log…', accelerator: IS_MAC ? 'Ctrl+Cmd+L' : 'Ctrl+Shift+L', click: openLogWindow },
+        // ⌃⌘L rather than ⌘⇧L, and Ctrl+Shift+G on Linux: ⌘⇧ chords belong
+        // to the page (⌘⇧↩, ⌘⇧J/K), and on Linux Ctrl+Shift+L is the vim
+        // key for focus-right (APP_SHORTCUTS).
+        { label: 'Connection Log…', accelerator: IS_MAC ? 'Ctrl+Cmd+L' : 'Ctrl+Shift+G', click: openLogWindow },
         { type: 'separator' },
         // Opens the page's settings panel; needs a host page on screen.
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => chromeCmd('settings') },
         { type: 'separator' },
         // Hide / Hide Others lose their ⌘H / ⌥⌘H accelerators: those are
-        // pane chords (focus left / merge left with the vim key) in the page.
+        // pane chords (focus left / move column left, vim key) in the page.
         ...(IS_MAC ? [
           { label: 'Hide webmux', click: () => app.hide() },
           { label: 'Hide Others', click: () => Menu.sendActionToFirstResponder('hideOtherApplications:') },
@@ -1457,9 +1465,10 @@ function buildMenu() {
         { role: 'minimize' },
         ...(IS_MAC ? [{ role: 'zoom' }] : []),
         { type: 'separator' },
-        // Cmd+Shift+[ / ] cycle through connected hosts in pill order.
-        { label: 'Previous Host', accelerator: 'CmdOrCtrl+Shift+[', click: () => showAdjacent(-1) },
-        { label: 'Next Host', accelerator: 'CmdOrCtrl+Shift+]', click: () => showAdjacent(1) },
+        // ⌘⇧[ / ⌘⇧] (Ctrl+PageUp/PageDown on Linux, where Ctrl+Shift+[ ]
+        // are pane chords) cycle through connected hosts in pill order.
+        { label: 'Previous Host', accelerator: IS_MAC ? 'Cmd+Shift+[' : 'Ctrl+PageUp', click: () => showAdjacent(-1) },
+        { label: 'Next Host', accelerator: IS_MAC ? 'Cmd+Shift+]' : 'Ctrl+PageDown', click: () => showAdjacent(1) },
         { type: 'separator' },
         // Cmd+1..9 jump between connected hosts in pill order.
         ...Array.from({ length: 9 }, (_, i) => ({
