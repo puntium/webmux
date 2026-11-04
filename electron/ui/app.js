@@ -13,8 +13,8 @@
    to merge it into the neighbouring column — see paneCommandForKey; on
    Linux the chord key is Alt and Ctrl stands in for ⌥).
    Structural changes animate: panes travel to their new places while
-   their stacks and columns close up or make room (animateStrip), and a
-   closing pane collapses in place (animateRemoval).
+   their stacks and columns close up or make room, and a closing pane is
+   clipped away in place (animateStrip; compositor-only).
    Sessions live on the server; the layout is saved to
    localStorage — per origin, so per host and per client — and a reload
    restores both the sessions (from headless snapshots) and the arrangement.
@@ -168,7 +168,9 @@ function loadLayout() {
 // through here (setFocus just retargets classes), so the terminals aren't
 // re-attached — and re-fitted — for every ⌘←. With animate, every pane and
 // divider travels from where it was to where it ends up (animateStrip).
-function render({ animate = false } = {}) {
+// leaving: panes this render removes, kept on screen through the layout
+// animation (animateStrip) — see removeTile.
+function render({ animate = false, leaving = [] } = {}) {
   if (!allIds().includes(focusedId)) focusedId = columns[0]?.active ?? null;
   const scrollLeft = layoutEl.scrollLeft; // replaceChildren would reset it (and settling could clamp it)
   const before = animate && !reducedMotion() ? snapshotStrip() : null;
@@ -178,7 +180,8 @@ function render({ animate = false } = {}) {
   // xterm needs its element in the DOM before open(); open any new tiles now.
   for (const tile of tiles.values()) tile.openIfNeeded();
   applyColumnWidths();
-  if (before) animateStrip(before); // measures the final layout, then lifts the panes out of it
+  if (before) animateStrip(before, leaving); // measures the final layout, then animates from the old one
+  else for (const x of leaving) x.done?.();
   layoutEl.scrollLeft = scrollLeft; // after animateStrip: the strip keeps its old extent while animating
   if (before) chaseStripEnd();
   fitAll();
@@ -1037,48 +1040,95 @@ function makeTile(sessionId) {
 // ---------------------------------------------------------------------------
 
 // A structural change (a new pane, ⌥⌘↩, a pane merged into the next column,
-// expelled into one of its own, swapped, ⌘F) re-renders the strip; this
-// animates the difference. render() snapshots every pane's and divider's
-// box before the rebuild (snapshotStrip) and, once the new DOM has laid
-// out, animateStrip measures where each ends up, lifts all of them out of
-// the flow (position: absolute in strip coordinates) and animates each
-// from its old box to its final one — so a moved pane flies from its old
-// slot to its new one while the stacks it leaves and joins close up and
-// make room, its old column shrinks away and the columns beside it slide
-// over, all on one clock. A pane with no old box (a fresh terminal) grows
-// from a zero-size box at the edge of the neighbour it opens beside — the
-// pane above it in its stack, else the column to its left — and fades in.
-// Every pane's body is pinned at its final size meanwhile, so the terminal
-// is fitted once and the animating box clips it rather than reflowing it.
-// The focused pane — the one the command acted on — sits on top of the
-// rest wherever boxes overlap in flight. When the animations end the
-// inline styles are cleared and the flow layout takes over at exactly the
-// geometry they arrived at. Columns keep their rule-driven widths
-// throughout (they never depended on their content), so the strip's
-// scroll geometry is final from the first frame; a hidden keeper holds
-// the old extent open so a strip that got narrower can chase its new end
-// smoothly instead of clamping. Dividers match by their index in a column
-// matched by its panes (matchColumns): the divider a merge leaves between
-// the survivors is the one that separated the top of them from the
-// leaver, and it slides down as the survivors grow.
+// expelled into one of its own, swapped, ⌘F, a pane closed) re-renders the
+// strip; this animates the difference, entirely on the compositor.
+// render() snapshots every pane's and divider's box before the rebuild
+// (snapshotStrip) and, once the new DOM has laid out, animateStrip
+// measures where each ends up and leaves it there: the flow layout is
+// final from the first frame, and what moves on screen is a transform
+// (FLIP: the element starts translated back to its old box and eases to
+// rest) plus a clip (clip-path inset) that reveals a growing box from its
+// old size up — or, since an element can't be shown larger than it is, a
+// ghost of the pane's shell (background, border, ring) laid under a
+// shrinking one and clipped down from the old box to the new. Transform,
+// clip-path and opacity animate on the compositor thread, so no frame of
+// the move runs style, layout or paint on the main thread: the terminals'
+// layers are rasterised once at their final size and only recomposited,
+// and a 200 ms move costs the same on a 5K panel over an integrated GPU as
+// on a laptop screen. (The previous version animated left/top/width/height
+// of out-of-flow boxes, which relaid out and repainted every pane per
+// frame: fine on Apple GPUs, visibly choppy on Linux.)
+// A pane with no old box (a fresh terminal) is revealed from a zero-size
+// box at the edge of the neighbour it opens beside — the pane above it in
+// its stack, else the column to its left — and fades in. A pane that is
+// leaving (closed) stays in the strip out of flow at its old box, its
+// content holding still while the clip closes in on it: a stacked pane is
+// squeezed to the line where its neighbours meet as they grow into its
+// room, a pane alone in its column is wiped from the right as the columns
+// beyond slide in; when the move ends its terminal is disposed
+// (removeTile). The focused pane — the one the command acted on — sits on
+// top of the rest wherever boxes overlap in flight. When the animations
+// end the inline styles and ghosts are cleared and nothing moves: the flow
+// layout was already at the geometry they arrived at. Columns keep their
+// rule-driven widths throughout (they never depended on their content), so
+// the strip's scroll geometry is final from the first frame; a hidden
+// keeper holds the old extent open so a strip that got narrower can chase
+// its new end smoothly instead of clamping. Dividers match by their index
+// in a column matched by its panes (matchColumns): the divider a merge
+// leaves between the survivors is the one that separated the top of them
+// from the leaver, and it slides down as the survivors grow.
 const MOVE_MS = 200;
 const MOVE_EASE = 'cubic-bezier(0.4, 0, 0.2, 1)';
 const STACK_GAP_PX = 8; // divider height + its margins: pane-to-pane distance in a stack
-let layoutAnim = null; // { anims, els } while a structural change is animating
+const PANE_RADIUS_PX = 8; // .pane border-radius
+const DIVIDER_RADIUS_PX = 3; // .divider border-radius
+let layoutAnim = null; // { anims, els, ghosts, exits } while a structural change is animating
 let extentKeeper = null; // absolute 1px box that keeps the strip's old scroll extent
+const flights = new WeakMap(); // in-flight element → { from, to, anim }, for mid-flight measuring
+
+const px = (n) => `${n}px`;
+// clip-path showing the top-left w×h of an element that is W×H.
+const clipTo = (w, h, W, H, r) => `inset(0 ${px(Math.max(0, W - w))} ${px(Math.max(0, H - h))} 0 round ${px(r)})`;
+
+// y of MOVE_EASE at time fraction x (bisection on the curve's x: a
+// pixel's accuracy over a 200 ms move), to know how far a mid-flight clip
+// has got — the animation exposes its time, not its eased progress.
+function moveEase(x) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const [x1, y1, x2, y2] = [0.4, 0, 0.2, 1];
+  const bx = (t) => 3 * (1 - t) ** 2 * t * x1 + 3 * (1 - t) * t * t * x2 + t ** 3;
+  const by = (t) => 3 * (1 - t) ** 2 * t * y1 + 3 * (1 - t) * t * t * y2 + t ** 3;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (bx(mid) < x) lo = mid; else hi = mid;
+  }
+  return by((lo + hi) / 2);
+}
 
 // Box in strip coordinates: relative to #layout's padding box and unscrolled,
 // so it holds while the strip scrolls underneath (absolute children of the
-// strip scroll with its content).
+// strip scroll with its content). Mid-flight, the box the eye sees: the
+// element's rect includes its transform but not its clip, so the size is
+// the clip's current one.
 function stripRect(el) {
   const r = el.getBoundingClientRect();
   const base = layoutEl.getBoundingClientRect();
-  return {
+  const rect = {
     left: r.left - base.left + layoutEl.scrollLeft,
     top: r.top - base.top + layoutEl.scrollTop,
     width: r.width,
     height: r.height,
   };
+  const f = flights.get(el);
+  if (f) {
+    const p = moveEase(Number(f.anim.currentTime || 0) / MOVE_MS);
+    rect.width = f.from.width + (f.to.width - f.from.width) * p;
+    rect.height = f.from.height + (f.to.height - f.from.height) * p;
+  }
+  return rect;
 }
 
 // Old boxes: panes by id, columns in order with their pane ids and
@@ -1127,9 +1177,12 @@ function matchColumns(oldCols, colEls) {
   return match;
 }
 
-function animateStrip(before) {
+// leaving: panes closed by this render — { el, alone, above, below, done }
+// (removeTile): the element, pulled out of the DOM by the rebuild, whether
+// it had its column to itself, the ids of its stack neighbours, and what to
+// call once it is off screen.
+function animateStrip(before, leaving = []) {
   const colEls = [...layoutEl.querySelectorAll(':scope > .column')];
-  if (!colEls.length) return;
   const oldCols = matchColumns(before.cols, colEls);
   const isPane = (el) => el?.classList.contains('pane') === true;
   const oldPane = (el) => (isPane(el) ? before.panes.get(el.dataset.id) : null);
@@ -1152,45 +1205,99 @@ function animateStrip(before) {
     return { ...to, width: 0 };
   };
 
-  // Measure everything's final box first: the first element lifted out of
-  // the flow would move the rest.
+  // Measure everything's final box first, before any style changes.
   const plan = [];
   colEls.forEach((colEl, n) => {
     let dividerIndex = 0;
     for (const el of colEl.children) {
-      const to = stripRect(el);
+      const pane = isPane(el);
       let from;
-      let body = null;
-      if (isPane(el)) {
-        from = before.panes.get(el.dataset.id);
-        body = el.querySelector(':scope > .pane-body');
-        body = { el: body, rect: body.getBoundingClientRect() };
-      } else if (el.classList.contains('divider')) {
-        from = oldCols[n]?.dividers[dividerIndex++];
-      } else {
-        continue;
-      }
-      plan.push({ el, from: from || entryRect(el, to, n), to, fresh: !from, body });
+      if (pane) from = before.panes.get(el.dataset.id);
+      else if (el.classList.contains('divider')) from = oldCols[n]?.dividers[dividerIndex++];
+      else continue;
+      const to = stripRect(el);
+      plan.push({ el, from: from || entryRect(el, to, n), to, fresh: !from, pane });
     }
   });
+  const exits = [];
+  for (const x of leaving) {
+    const from = before.panes.get(x.el.dataset.id);
+    if (!from) { x.el.remove(); x.done?.(); continue; }
+    // Where the clip closes to: a column of its own is wiped from the right
+    // (its left edge stays, the columns beyond slide in to it); a stacked
+    // pane is squeezed to the line its neighbours meet on — half a gap below
+    // the final bottom of the one above, else half a gap above the one below.
+    let cut;
+    if (x.alone) {
+      cut = [0, from.width, 0, 0];
+    } else {
+      const above = x.above != null && paneEl(x.above);
+      const below = x.below != null && paneEl(x.below);
+      let meet;
+      if (above) { const a = stripRect(above); meet = a.top + a.height + STACK_GAP_PX / 2; }
+      else if (below) meet = stripRect(below).top - STACK_GAP_PX / 2;
+      else meet = from.top + from.height / 2;
+      meet = Math.min(Math.max(meet, from.top), from.top + from.height);
+      cut = [meet - from.top, 0, from.top + from.height - meet, 0];
+    }
+    exits.push({ ...x, from, cut });
+  }
 
-  const box = (r) => ({ left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
   const opts = { duration: MOVE_MS, easing: MOVE_EASE, fill: 'forwards' };
   const focusedKey = String(focusedId);
   const anims = [];
   const els = [];
-  for (const { el, from, to, fresh, body } of plan) {
-    if (body) {
-      body.el.style.width = `${body.rect.width}px`;
-      body.el.style.flex = `0 0 ${body.rect.height}px`;
+  const ghosts = [];
+  for (const { el, from, to, fresh, pane } of plan) {
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    const r = pane ? PANE_RADIUS_PX : DIVIDER_RADIUS_PX;
+    // Order while boxes overlap: the focused pane over the rest, dividers
+    // under. position: relative changes nothing about the layout.
+    let zIndex = 1;
+    if (pane) zIndex = el.dataset.id === focusedKey ? 3 : 2;
+    Object.assign(el.style, { position: 'relative', zIndex });
+    const frames = [{ transform: `translate(${px(dx)}, ${px(dy)})` }, { transform: 'translate(0px, 0px)' }];
+    if (from.width < to.width || from.height < to.height) { // grows: revealed from its old size
+      frames[0].clipPath = clipTo(from.width, from.height, to.width, to.height, r);
+      frames[1].clipPath = clipTo(to.width, to.height, to.width, to.height, r);
     }
-    let zIndex = 1; // dividers
-    if (body) zIndex = el.dataset.id === focusedKey ? 3 : 2;
-    Object.assign(el.style, { position: 'absolute', margin: '0', zIndex });
-    el.classList.add('in-flight'); // a shrinking box's uncovered part takes the body's dimmed shade
+    if (fresh && pane) {
+      frames[0].opacity = 0;
+      frames[1].opacity = 1;
+    }
+    const anim = el.animate(frames, opts);
+    anims.push(anim);
     els.push(el);
-    anims.push(el.animate([box(from), box(to)], opts));
-    if (fresh && body) anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], opts));
+    flights.set(el, { from, to, anim });
+    if (from.width > to.width || from.height > to.height) {
+      // Shrinks: a ghost of its shell, under it, shows the part of the old
+      // box the element no longer has, clipped down to the new one.
+      const W = Math.max(from.width, to.width);
+      const H = Math.max(from.height, to.height);
+      const ghost = document.createElement('div');
+      ghost.className = `strip-ghost ${pane ? 'pane-ghost' : 'divider-ghost'}`;
+      if (pane && el.classList.contains('focused')) ghost.classList.add('focused');
+      Object.assign(ghost.style, { left: px(to.left), top: px(to.top), width: px(W), height: px(H) });
+      layoutEl.appendChild(ghost);
+      ghosts.push(ghost);
+      anims.push(ghost.animate([
+        { transform: frames[0].transform, clipPath: clipTo(from.width, from.height, W, H, r) },
+        { transform: 'translate(0px, 0px)', clipPath: clipTo(to.width, to.height, W, H, r) },
+      ], opts));
+    }
+  }
+  for (const x of exits) {
+    const { el, from, cut } = x;
+    Object.assign(el.style, {
+      position: 'absolute', left: px(from.left), top: px(from.top), width: px(from.width), height: px(from.height),
+      margin: '0', flex: 'none', zIndex: 1,
+    });
+    layoutEl.appendChild(el); // the rebuild took it out of the DOM; its terminal keeps painting
+    anims.push(el.animate([
+      { clipPath: `inset(0 0 0 0 round ${px(PANE_RADIUS_PX)})` },
+      { clipPath: `inset(${cut.map(px).join(' ')} round ${px(PANE_RADIUS_PX)})` },
+    ], opts));
   }
   if (!anims.length) return;
 
@@ -1202,7 +1309,7 @@ function animateStrip(before) {
   extentKeeper.style.left = `${before.extent - 1}px`;
   layoutEl.appendChild(extentKeeper);
 
-  const token = { anims, els };
+  const token = { anims, els, ghosts, exits };
   layoutAnim = token;
   Promise.race([
     Promise.all(anims.map((a) => a.finished)).catch(() => {}),
@@ -1222,99 +1329,25 @@ function chaseStripEnd() {
   if (layoutEl.scrollLeft > max) scrollStripTo(max);
 }
 
-// Ends a layout animation, if one is running: the flow layout takes over
-// at the geometry the boxes were headed for. Also run before a close
-// animation measures the stack it is about to collapse.
+// Ends a layout animation, if one is running: the elements are already in
+// their final flow layout, so this just drops the inline ordering styles
+// and the animated transforms/clips (which end at identity), removes the
+// ghosts, and hands the leaving panes back for disposal.
 function settleStrip() {
   if (!layoutAnim) return;
-  const { anims, els } = layoutAnim;
+  const { anims, els, ghosts, exits } = layoutAnim;
   layoutAnim = null;
   for (const a of anims) a.cancel();
   for (const el of els) {
-    for (const p of ['position', 'left', 'top', 'width', 'height', 'margin', 'z-index']) el.style.removeProperty(p);
-    el.classList.remove('in-flight');
-    const body = el.querySelector(':scope > .pane-body');
-    if (body) {
-      body.style.removeProperty('width');
-      body.style.removeProperty('flex');
-    }
+    for (const p of ['position', 'z-index', 'transform', 'clip-path', 'opacity']) el.style.removeProperty(p);
+    flights.delete(el);
+  }
+  for (const g of ghosts) g.remove();
+  for (const x of exits) {
+    x.el.remove();
+    x.done?.();
   }
   if (!chase) extentKeeper?.remove();
-}
-
-// Closing animation. A pane alone in its column takes the column with it:
-// the column shrinks to zero width with its left edge fixed and the
-// neighbours slide in from the right (they widen as they go if the rule
-// now gives them more room). A stacked pane collapses while the rest of
-// its stack grows into the room it leaves: every pane in the column
-// animates from its current height to its share of the column without
-// the closing one, all on the same clock, so the survivors above and
-// below close in on it from both sides and meet where it was. The
-// closing pane's content stays put on screen — its box shrinks around it
-// and clips it — rather than scrolling with the box. The content is left
-// alone and nothing is refitted until the structural render afterwards.
-// Resolves when done, or at once under reduced motion; bounded so a
-// detached element can't stall it.
-const CLOSE_MS = 180;
-const CLOSE_EASE = 'ease-in-out';
-async function animateRemoval(id) {
-  if (reducedMotion()) return;
-  settleStrip(); // measure the stack at rest, not mid-flight
-  const pane = paneEl(id);
-  const col = columnOf(id);
-  if (!pane || !col) return;
-  const opts = { duration: CLOSE_MS, easing: CLOSE_EASE, fill: 'forwards' };
-  let anims;
-  if (col.panes.length === 1) {
-    const el = pane.parentElement;
-    const width = el.getBoundingClientRect().width;
-    Object.assign(el.style, { overflow: 'hidden', flex: 'none', minWidth: '0', maxWidth: 'none' });
-    anims = [el.animate([{ width: `${width}px` }, { width: '0px' }], opts)];
-  } else {
-    anims = collapseInStack(pane, col.sizes, col.panes.indexOf(id), opts);
-  }
-  await Promise.race([
-    Promise.all(anims.map((a) => a.finished)).catch(() => {}),
-    new Promise((r) => setTimeout(r, CLOSE_MS + 50)),
-  ]);
-}
-
-// The stacked case of animateRemoval: pane is the i-th of its column, and
-// weights are the column's stack weights (the survivors keep theirs; the
-// render afterwards normalises them, which is what the target heights
-// here anticipate). Returns the animations started.
-function collapseInStack(pane, weights, i, opts) {
-  const panes = [...pane.parentElement.querySelectorAll(':scope > .pane')];
-  const rects = panes.map((p) => p.getBoundingClientRect());
-  const heights = rects.map((r) => r.height);
-  // The divider that goes with the pane — above it, or below the top pane
-  // — folds away too; its room (margins included) is the gap to the
-  // neighbour it separates the pane from.
-  const divider = i ? pane.previousElementSibling : pane.nextElementSibling;
-  const gap = i ? rects[i].top - rects[i - 1].bottom : rects[1].top - rects[0].bottom;
-  const room = heights.reduce((a, b) => a + b, 0) + gap;
-  const total = weights.reduce((a, w, k) => (k === i ? a : a + w), 0) || 1;
-  const finals = heights.map((h, k) => (k === i ? 0 : Math.round(room * weights[k] / total)));
-  const anims = [];
-  panes.forEach((p, k) => {
-    p.style.flex = 'none';
-    anims.push(p.animate([{ height: `${heights[k]}px` }, { height: `${finals[k]}px` }], opts));
-  });
-  const dividerStyle = getComputedStyle(divider);
-  anims.push(divider.animate(
-    [{ height: dividerStyle.height, margin: dividerStyle.margin }, { height: '0px', margin: '0px' }],
-    opts,
-  ));
-  // The pane's top edge moves by however much the panes above grow, less
-  // the divider that folds away above it; counter that so the content
-  // holds still on screen. The body keeps its size instead of shrinking
-  // with the pane, so the box clips it rather than reflowing it.
-  const shift = heights.reduce((a, h, k) => (k < i ? a + finals[k] - h : a), 0) - (i ? gap : 0);
-  for (const child of pane.children) {
-    if (child.classList.contains('pane-body')) child.style.flex = `0 0 ${child.getBoundingClientRect().height}px`;
-    anims.push(child.animate([{ transform: 'translateY(0)' }, { transform: `translateY(${-shift}px)` }], opts));
-  }
-  return anims;
 }
 
 async function removeTile(sessionId, killServerSession) {
@@ -1326,16 +1359,27 @@ async function removeTile(sessionId, killServerSession) {
   const kill = killServerSession && !isFilesId(sessionId)
     ? fetch(`${API}/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {})
     : null;
-  await animateRemoval(sessionId); // the terminal keeps painting while it shrinks
+  // The pane leaves with the strip's layout animation: render keeps its
+  // element on screen out of flow and clips it away as the others close in
+  // (animateStrip), then calls done; the terminal keeps painting meanwhile.
+  const el = paneEl(sessionId);
+  const col = columnOf(sessionId);
+  let leaving = null;
+  if (el && col && !reducedMotion()) {
+    const i = col.panes.indexOf(sessionId);
+    leaving = { el, alone: col.panes.length === 1, above: i > 0 ? col.panes[i - 1] : null, below: col.panes[i + 1] ?? null };
+  }
+  const gone = new Promise((resolve) => { if (leaving) leaving.done = resolve; else resolve(); });
+  removeSessionFromLayout(sessionId);
+  saveLayout();
+  render({ animate: true, leaving: leaving ? [leaving] : [] });
+  tiles.get(focusedId)?.focus();
+  await gone;
   tile.term?.dispose();
   tile.dispose?.(); // files tiles: watch streams + window listeners
   tile.root.remove();
   await kill;
   discardWidgetState(sessionId);
-  removeSessionFromLayout(sessionId);
-  saveLayout();
-  render({ animate: true }); // smooths the last few px between the collapsed state and the new layout
-  tiles.get(focusedId)?.focus();
 }
 
 // ---------------------------------------------------------------------------

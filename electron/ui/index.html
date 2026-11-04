@@ -187,6 +187,7 @@
        strip-relative for the scroll-into-view math. */
     #layout {
       position: relative;
+      isolation: isolate; /* the ghosts' z-index: -1 sits under the columns, not under this box */
       flex: 1;
       display: flex;
       justify-content: safe center;
@@ -315,18 +316,18 @@
     :root[data-unfocus-fade] .pane:not(.focused) .pane-body::after {
       opacity: calc(0.7 * var(--unfocus-fade));
     }
-    /* While a layout animation has a pane's box in flight (app.js
-       animateStrip) its body is pinned at its final size, so a shrinking
-       box shows some of the pane's own background beside or below the
-       body. Darken that bare part exactly as the overlay darkens the body:
-       a shadow of the body, spread wide and pushed down by the same amount
-       so its top edge is the body's, painted inside the body's opacity
-       group like the overlay is. It stops at the body's top, so the bar
-       above — translucent, so any tint under it would show through — keeps
-       its colour; the pane's overflow clips the rest. */
-    :root[data-unfocus-fade] .pane.in-flight:not(.focused) .pane-body {
-      box-shadow: 0 9999px 0 9999px rgba(0, 0, 0, calc(0.7 * var(--unfocus-fade)));
-    }
+    /* Ghost shells for a layout animation (app.js animateStrip): a pane or
+       divider that shrinks is shown at its final size from the first frame,
+       and this box, laid under it and clipped down from the old box to the
+       new, stands in for the part it no longer has. Dimmed like an unfocused
+       pane's body (the same black overlay as .pane-body::after), so the bare
+       part of a shrinking box matches the body beside it. */
+    .strip-ghost { position: absolute; box-sizing: border-box; pointer-events: none; z-index: -1; }
+    .pane-ghost { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+    .pane-ghost.focused { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .pane-ghost::after { content: ''; position: absolute; inset: 0; background: #000; opacity: 0; }
+    :root[data-unfocus-fade] .pane-ghost:not(.focused)::after { opacity: calc(0.7 * var(--unfocus-fade)); }
+    .divider-ghost { background: var(--border); border-radius: 3px; }
     .tile {
       flex: 1;
       display: flex;
