@@ -7,7 +7,8 @@ the macOS build; the Linux differences (Ctrl+Shift chords in place of ⌘, the
 OS keyring in place of the Keychain, app shortcuts intercepted in main via
 before-input-event because Linux menu accelerators lose to the page) are
 in README.md › Linux and in the comments at main.js `PANE_MENU` /
-`APP_SHORTCUTS` and app.js `chordModifiers`. server.js stays the remote API surface (file
+`APP_SHORTCUTS` and app.js `chordModifiers`. The server (`webmux-host serve`;
+`server.js` is its legacy node reference) stays the remote API surface (file
 browser, paste/clipboard shims, future endpoints); ptyhost stays the session
 owner; the frontend (`electron/ui/` + the @xterm browser packages) ships
 inside the client and is served locally on the `webmux://` scheme — only
@@ -24,10 +25,10 @@ Electron main process (macOS)
             └─ WebContentsView → webmux://<host-slug>/?port=<local>
                  │  (page + assets served from the app bundle)
                  └─ /api/* and /ws → http://127.0.0.1:<local>, riding the tunnel
-                      (remote) server.js — plain http on a unix socket
-                                           ($XDG_RUNTIME_DIR/webmux/<name>.http.sock,
-                                            0600 in a 0700 dir)
-                                          └─ ptyhost daemon (unchanged)
+                      (remote) webmux-host serve — plain http on a unix socket
+                                                   ($XDG_RUNTIME_DIR/webmux/<name>.http.sock,
+                                                    0600 in a 0700 dir)
+                                                  └─ webmux-host ptyhost daemon
 ```
 
 Several profiles can be connected at once; the header pills (or ⌘1…⌘9, ⌘⇧[ / ⌘⇧] to cycle)
@@ -40,7 +41,7 @@ switching.
 Design decisions, and why:
 
 - **Tunnel the whole HTTP server; don't talk to ptyhost directly.** Keeps
-  server.js as the extension point for remote features. The machine-local
+  the server as the extension point for remote features. The machine-local
   endpoints (fs browser, paste slot, /proc foreground detection) need a
   process on the host, and the thin restartable server is the right home
   for churny features (ptyhost stays frozen so sessions survive upgrades).
@@ -63,8 +64,8 @@ Design decisions, and why:
   are gone; there is no browser/TCP deployment mode.
 - **Connecting IS deploying** (since the push-deploy change — see
   `docs/push-deploy.md`): before each tunnel attempt the client makes sure
-  the host runs the server version it ships (pushing a node runtime and the
-  payload over ssh when needed, restarting the server when it's outdated —
+  the host runs the server version it ships (pushing the platform's payload — one
+  static `webmux-host` binary plus shims — over ssh when needed, restarting the server when it's outdated —
   sessions live in the pty host and survive that), then reads the socket
   path from the advert (`~/.webmux/<name>.json`) the starter prints. sshd
   resolves the forwarded path literally (no `~`/`$VAR` expansion) and the
@@ -232,11 +233,11 @@ A self-contained npm package so the server install never pulls Electron.
 
 ### 3. Remote setup
 
-None — the host needs nothing but sshd. Connecting pushes a node runtime
-and the server payload to `~/.webmux/dist` and starts the server (see
+None — the host needs nothing but sshd. Connecting pushes the server
+payload (a static `webmux-host` binary plus shims) to `~/.webmux/dist` and starts the server (see
 `docs/push-deploy.md`); the running server advertises its socket in
-`~/.webmux/<instance>.json`. (`npm start` from a checkout still works for
-local development of the server itself, but the client will replace such a
+`~/.webmux/<instance>.json`. (`webmux-host serve` from `host/dist/`, or the
+legacy `npm start`, still works for local development of the server itself, but the client will replace such a
 server with the deployed payload on its next connect.)
 
 ## Build & install

@@ -7,9 +7,9 @@
 // header lives outside the served pages on purpose — a remote server must
 // never see the other profiles or drive switching.
 //
-// Connecting IS deploying (electron/deploy.js): the client pushes a node
-// runtime and the server payload to the host over ssh and (re)starts the
-// server there — a host needs nothing but sshd, and there is no separate
+// Connecting IS deploying (electron/deploy.js): the client pushes the
+// server payload (a static webmux-host binary per platform) to the host over
+// ssh and (re)starts the server there — a host needs nothing but sshd, and there is no separate
 // "server already running" mode.
 //
 // The frontend is served locally: each connection's view loads
@@ -61,7 +61,7 @@ const PROFILE_DEFAULTS = {
   sshPort: 0, // 0 = ssh default (22 / per ssh_config)
   identityFile: '', // optional -i path
   // Which webmux instance to run on the host (blank = 'default'). Connecting
-  // always deploys: the client pushes a node runtime + the server payload
+  // always deploys: the client pushes the server payload (webmux-host)
   // over ssh (kept current under ~/.webmux/dist) and (re)starts the server
   // there — the host needs nothing but sshd. Distinct instance names get
   // independent servers and session sets on the same host.
@@ -676,8 +676,20 @@ function failureMsg(conn, exitCode) {
   return exitCode !== undefined ? `ssh exited (${exitCode})` : 'connection failed';
 }
 
-// Connecting IS deploying: push the node runtime + server payload to the
-// host if it doesn't have this client's versions yet, (re)start the server
+// The bundled payload manifest (deploy/build-payload.js):
+// { platforms: { <key>: { hash, bytes } }, builtAt }, or null when this is a
+// dev build without one (or with a pre-native single-payload manifest).
+function readPayloadManifest() {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(__dirname, 'payload', 'payload.json'), 'utf8'));
+    return m && m.platforms && typeof m.platforms === 'object' ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+// Connecting IS deploying: push the server payload for the host's platform
+// if it doesn't have this client's version yet, (re)start the server
 // there, then tunnel to the advertised socket. Runs on every (re)connect
 // attempt — the already-current case costs two quick ssh round trips
 // (probe + reuse). Cancellation rides the existing machinery: every ssh
@@ -716,21 +728,22 @@ async function runDeploy(conn, gen, env, instance) {
   try {
     await warmLocalNetwork(conn, gen);
     if (quitting || gen !== conn.generation) return;
-    let manifest;
-    try {
-      manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'payload', 'payload.json'), 'utf8'));
-    } catch {
-      throw new Error('no server payload bundled — run `node deploy/build-payload.js` and restart the app');
-    }
+    // A missing manifest (dev build without `make payload`) is reported by
+    // deploy() after the probe, naming the platform the host needs; probing
+    // first keeps ssh/LAN failures visible as such.
+    const manifest = readPayloadManifest();
+    // Note: clients before the native host cached node runtimes in
+    // <userData>/node-cache; nothing uses it now, so it could be deleted.
     const result = await deploy(ctx, {
-      payloadTar: path.join(__dirname, 'payload', 'payload.tar.gz'),
-      payloadHash: manifest.hash,
+      payloadDir: path.join(__dirname, 'payload'),
+      manifest,
       instance,
-      nodeCacheDir: path.join(app.getPath('userData'), 'node-cache'),
     });
     if (quitting || gen !== conn.generation) return;
     log.info(conn.name, `deploy done: server ${result.action || 'ready'}`, {
       ms: Date.now() - started,
+      platform: result.platform,
+      payload: String(result.payloadHash || '').slice(0, 12),
       socket: result.advert?.socket,
       pid: result.advert?.pid,
     });
@@ -853,7 +866,7 @@ function probeLoop(conn, gen, child) {
     req.on('error', (err) => {
       if (!live()) return;
       if (conn.status.state !== 'connected') {
-        // Not up yet. remote-start just verified the socket answers, so a
+        // Not up yet. `webmux-host start` just verified the socket answers, so a
         // forward that never reaches it is broken (ssh's "connect failed"
         // lines land in stderrTail for the status detail).
         if (Date.now() - started > PROBE_FIRST_ANSWER) return giveUp('server did not answer through the tunnel');
@@ -893,34 +906,43 @@ function onServerUp(conn) {
 // Same output contract as the deploy scripts: @@-tagged lines survive
 // shell-profile noise; POSIX sh, double quotes only (see deploy.js).
 //
-// Which ptyhost.js runs the shutdown matters: payload dirs accumulate on the
-// host and tar-preserved mtimes make "newest by ls -t" unreliable, and a CLI
-// from the wrong era may look for the host's control socket under a path the
+// Which CLI runs the shutdown matters: payload dirs accumulate on the host
+// and tar-preserved mtimes make "newest by ls -t" unreliable, and a CLI from
+// the wrong era may look for the host's control socket under a path the
 // running host doesn't use — concluding "not running" while the host hums
-// on. So prefer the payload this client ships (it's the one that spawned the
-// current host on any host this client has connected to), and if the CLI
-// still says not-running, fall back to killing this user's pty-host
-// process(es) for the instance directly — that's exactly what the user asked
-// for, and SIGTERM runs the host's clean shutdown path.
+// on. So prefer the payloads this client ships (one per platform; the one
+// matching the host spawned its current pty host, and a wrong-arch binary
+// just fails to exec and is skipped), then any other native webmux-host,
+// then a legacy node payload (`ptyhost.js` under the pushed node) for hosts
+// still on the pre-native deploy. If every CLI says not-running, fall back
+// to killing this user's pty-host process(es) for the instance directly —
+// node or native — which is exactly what the user asked for, and SIGTERM
+// runs the host's clean shutdown path.
 function restartRemoteSessions(profile, env) {
   const instance = String(profile.instance || '') || 'default';
-  let hash = '';
-  try {
-    hash = String(JSON.parse(fs.readFileSync(path.join(__dirname, 'payload', 'payload.json'), 'utf8')).hash || '');
-  } catch { /* dev build without a bundled payload */ }
-  if (!/^[a-f0-9]*$/.test(hash)) hash = '';
+  const hashes = Object.values(readPayloadManifest()?.platforms || {})
+    .map((p) => String(p?.hash || ''))
+    .filter((h) => /^[a-f0-9]{64}$/.test(h));
   const instRe = instance.replace(/\./g, '[.]'); // regex-safe for pgrep -f
+  const hostRe = '(ptyhost[.]js|webmux-host ptyhost)';
   const script =
+    'r=no-deploy; ' +
+    'for f in ' +
+    hashes.map((h) => `$HOME/.webmux/dist/payload/${h}/webmux-host `).join('') +
+    '$(ls -t $HOME/.webmux/dist/payload/*/webmux-host 2>/dev/null); do ' +
+    '[ -x "$f" ] || continue; ' +
+    `if "$f" ptyhost --name ${instance} shutdown; then r=restarted; break; else r=not-running; fi; ` +
+    'done; ' +
+    'if [ "$r" != restarted ]; then ' +
     'node=$(ls -t $HOME/.webmux/dist/node/*/bin/node 2>/dev/null | head -1); ' +
-    (hash ? `ph=$HOME/.webmux/dist/payload/${hash}/ptyhost.js; [ -f "$ph" ] || ` : '') +
     'ph=$(ls -t $HOME/.webmux/dist/payload/*/ptyhost.js 2>/dev/null | head -1); ' +
-    'if [ -z "$node" ] || [ -z "$ph" ]; then r=no-deploy; ' +
-    `elif "$node" "$ph" --name ${instance} shutdown; then r=restarted; ` +
-    'else r=not-running; fi; ' +
+    'if [ -n "$node" ] && [ -n "$ph" ]; then ' +
+    `if "$node" "$ph" --name ${instance} shutdown; then r=restarted; else r=not-running; fi; ` +
+    'fi; fi; ' +
     'if [ "$r" = not-running ]; then ' +
-    `pids=$(pgrep -u "$(id -un)" -f "ptyhost[.]js --name ${instRe}$" 2>/dev/null); ` +
+    `pids=$(pgrep -u "$(id -un)" -f "${hostRe} --name ${instRe}$" 2>/dev/null); ` +
     (instance === 'default'
-      ? '[ -z "$pids" ] && pids=$(pgrep -u "$(id -un)" -f "ptyhost[.]js$" 2>/dev/null); '
+      ? `[ -z "$pids" ] && pids=$(pgrep -u "$(id -un)" -f "${hostRe}$" 2>/dev/null); `
       : '') +
     'if [ -n "$pids" ]; then kill $pids && r=stale-killed; fi; fi; ' +
     'echo "@@result $r"';

@@ -10,6 +10,15 @@ updates / server restarts as much as possible.
 > `server.js`, stopped only by explicit `node ptyhost.js shutdown`/kill).
 > Multiple named hosts can run concurrently. Remaining ideas below (snapshot
 > persistence, dtach, tmux flavors) are still open.
+>
+> **Update (2026-11): native host.** The daemon and server described here are
+> now one static Go binary, `webmux-host` (`webmux-host ptyhost` / `serve`,
+> mirror = libghostty-vt instead of `@xterm/headless`; see
+> `docs/native-host.md`). The protocol, socket names and lifecycle are
+> unchanged; stop a host with `webmux-host ptyhost --name X shutdown` (the
+> node `ptyhost.js` / `server.js` remain in the tree as the legacy reference
+> and still interoperate). The notes below predate that and talk about the
+> node implementation.
 
 ## Where we are today
 

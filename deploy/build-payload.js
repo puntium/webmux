@@ -1,26 +1,32 @@
-// Build the pushable server payload for the Electron client's auto-deploy
-// flow: a self-contained tarball of the server (sources + production
-// node_modules + multi-arch pty prebuilds) that runs on any supported target
-// under the node binary the client also pushes.
+// Build the pushable per-platform payloads for the Electron client's
+// auto-deploy flow. Each payload is the native `webmux-host` binary for one
+// platform plus the shell shims — no node, no node_modules, no npm install.
 //
-//   node deploy/build-payload.js
+//   node deploy/build-payload.js                 # every platform in PLATFORMS
+//   node deploy/build-payload.js --only linux-x64
+//
+// Inputs: host/dist/webmux-host-<key>, built by host/build.sh (`make host`).
+// WEBMUX_HOST_BIN_DIR=<dir> sources webmux-host-<key> from <dir> instead,
+// and WEBMUX_PAYLOAD_OUT_DIR=<dir> writes the output there instead of
+// electron/payload (both used by electron/test/deploy-fake.js with a
+// stand-in script).
 //
 // Output (consumed by electron/deploy.js at connect time):
-//   electron/payload/payload.tar.gz   the payload
-//   electron/payload/payload.json     { hash, builtAt, bytes, files }
-//   electron/payload/payload-staging/ the staged tree (kept for local testing)
+//   electron/payload/<key>/payload.tar.gz   the payload for that platform
+//   electron/payload/<key>/staging/         the staged tree (kept for local testing)
+//   electron/payload/payload.json           { platforms: { <key>: { hash, bytes } }, builtAt }
 //
-// The hash is a content hash (sorted relative paths + file bytes), stamped
-// into the payload as PAYLOAD_HASH; the running server reports it back via
-// its advert (~/.webmux/<name>.json), which is how the client decides on
-// re-push. Rebuilding unchanged sources yields the same hash.
+// Payload tree: webmux-host (0755), shims/ (exec bits kept), PAYLOAD_HASH.
+// The hash is a content hash (sorted relative paths + file bytes, excluding
+// PAYLOAD_HASH), stamped into the payload as PAYLOAD_HASH; the running
+// server reports it back via its advert (~/.webmux/<name>.json), which is
+// how the client decides on re-push. Rebuilding unchanged inputs yields the
+// same hash. Platforms get distinct hashes (their binaries differ), so they
+// coexist under ~/.webmux/dist/payload/ on a shared $HOME.
 //
-// Architecture support comes from @homebridge/node-pty-prebuilt-multiarch,
-// which replaces node-pty in the payload (ptyhost.js prefers it when
-// present) and ships prebuilt .node binaries for linux x64/arm64/arm/ia32 —
-// no compiler needed on the target. Adding a platform whose prebuild it
-// lacks (e.g. darwin) means adding a prebuild source here and a row in
-// electron/platforms.js.
+// --only writes a manifest containing just the platforms built in this run;
+// a previous build's other platforms are kept in payload.json only if their
+// tarball is still on disk.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -28,24 +34,16 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
-const OUT_DIR = path.join(REPO, 'electron', 'payload');
-const STAGING = path.join(OUT_DIR, 'payload-staging');
-const TARBALL = path.join(OUT_DIR, 'payload.tar.gz');
+const OUT_DIR = process.env.WEBMUX_PAYLOAD_OUT_DIR
+  ? path.resolve(process.env.WEBMUX_PAYLOAD_OUT_DIR)
+  : path.join(REPO, 'electron', 'payload');
 const MANIFEST = path.join(OUT_DIR, 'payload.json');
+const BIN_DIR = process.env.WEBMUX_HOST_BIN_DIR
+  ? path.resolve(process.env.WEBMUX_HOST_BIN_DIR)
+  : path.join(REPO, 'host', 'dist');
 
-const PTY_PREBUILT = '@homebridge/node-pty-prebuilt-multiarch';
-const PTY_PREBUILT_VERSION = '^0.14.1';
-
-// Source files/dirs copied verbatim from the repo into the payload. No
-// frontend here: the UI (electron/ui + the @xterm browser packages) ships
-// inside the Electron client and never crosses the wire.
-const SOURCES = [
-  'server.js',
-  'ptyhost.js',
-  'ptyhost-client.js',
-  'shims',
-  'deploy/remote-start.js',
-];
+// Payload keys; must match `key` in electron/platforms.js.
+const PLATFORMS = ['linux-x64', 'linux-arm64'];
 
 function copyRecursive(src, dest) {
   const st = fs.lstatSync(src);
@@ -65,9 +63,8 @@ function copyRecursive(src, dest) {
 
 // Deterministic content hash of the staged tree (excluding PAYLOAD_HASH
 // itself): sha256 over sorted "relpath\0filehash\n" lines. File modes are
-// deliberately excluded — npm doesn't produce stable modes across
-// platforms — except that nothing we hash depends on them at runtime beyond
-// the shims, which are committed with the exec bit set.
+// excluded; the binary is chmodded 0755 here and the shims are committed
+// with the exec bit set.
 function contentHash(root) {
   const files = [];
   (function walk(dir) {
@@ -91,49 +88,76 @@ function contentHash(root) {
   return h.digest('hex');
 }
 
+function parseArgs(argv) {
+  let only = null;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--only') only = argv[++i];
+    else if (argv[i].startsWith('--only=')) only = argv[i].slice(7);
+    else fail(`unknown argument '${argv[i]}' (usage: build-payload.js [--only <key>])`);
+  }
+  if (only !== null && !PLATFORMS.includes(only)) {
+    fail(`--only: unknown platform '${only}' (known: ${PLATFORMS.join(', ')})`);
+  }
+  return { keys: only ? [only] : PLATFORMS };
+}
+
+function fail(msg) {
+  console.error(`build-payload: ${msg}`);
+  process.exit(1);
+}
+
+function buildOne(key) {
+  const bin = path.join(BIN_DIR, `webmux-host-${key}`);
+  if (!fs.existsSync(bin)) {
+    fail(`missing ${bin} — build it with host/build.sh (\`make host\`, or`
+      + ` \`nix develop ./host -c ./build.sh\` in host/), or pass --only <key> for`
+      + ' the platforms you have');
+  }
+  const outDir = path.join(OUT_DIR, key);
+  const staging = path.join(outDir, 'staging');
+  const tarball = path.join(outDir, 'payload.tar.gz');
+
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.mkdirSync(staging, { recursive: true });
+  fs.copyFileSync(bin, path.join(staging, 'webmux-host'));
+  fs.chmodSync(path.join(staging, 'webmux-host'), 0o755);
+  copyRecursive(path.join(REPO, 'shims'), path.join(staging, 'shims'));
+
+  const hash = contentHash(staging);
+  fs.writeFileSync(path.join(staging, 'PAYLOAD_HASH'), hash + '\n');
+
+  execFileSync('tar', ['-czf', tarball, '-C', staging, '.']);
+  const bytes = fs.statSync(tarball).size;
+  console.log(`payload ${key} ${hash.slice(0, 12)} — ${(bytes / 1024 / 1024).toFixed(1)} MB`);
+  console.log(`  ${tarball}`);
+  return { hash, bytes };
+}
+
 function main() {
-  console.log('staging payload…');
-  fs.rmSync(STAGING, { recursive: true, force: true });
-  fs.mkdirSync(STAGING, { recursive: true });
-
-  // Payload package.json: the repo's production deps with node-pty swapped
-  // for the prebuilt multi-arch fork.
-  const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
-  const deps = { ...pkg.dependencies };
-  delete deps['node-pty'];
-  deps[PTY_PREBUILT] = PTY_PREBUILT_VERSION;
-  fs.writeFileSync(path.join(STAGING, 'package.json'), JSON.stringify({
-    name: 'webmux-payload',
-    version: pkg.version,
-    private: true,
-    dependencies: deps,
-  }, null, 2) + '\n');
-
-  console.log('npm install (production deps)…');
-  execFileSync('npm', ['install', '--omit=dev', '--no-audit', '--no-fund', '--no-package-lock'], {
-    cwd: STAGING,
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-
-  for (const rel of SOURCES) {
-    copyRecursive(path.join(REPO, rel), path.join(STAGING, rel));
+  const { keys } = parseArgs(process.argv.slice(2));
+  fs.mkdirSync(OUT_DIR, { recursive: true });
+  // Leftovers of the old single-payload layout would otherwise sit in the dir.
+  for (const stale of ['payload.tar.gz', 'payload-staging']) {
+    fs.rmSync(path.join(OUT_DIR, stale), { recursive: true, force: true });
   }
 
-  const hash = contentHash(STAGING);
-  fs.writeFileSync(path.join(STAGING, 'PAYLOAD_HASH'), hash + '\n');
+  let previous = {};
+  try {
+    previous = JSON.parse(fs.readFileSync(MANIFEST, 'utf8')).platforms || {};
+  } catch { /* first build, or old-format manifest */ }
 
-  console.log('tarring…');
-  execFileSync('tar', ['-czf', TARBALL, '-C', STAGING, '.']);
-
-  const bytes = fs.statSync(TARBALL).size;
+  const platforms = {};
+  for (const key of PLATFORMS) {
+    if (keys.includes(key)) platforms[key] = buildOne(key);
+    else if (previous[key] && fs.existsSync(path.join(OUT_DIR, key, 'payload.tar.gz'))) {
+      platforms[key] = previous[key];
+    }
+  }
   fs.writeFileSync(MANIFEST, JSON.stringify({
-    hash,
+    platforms,
     builtAt: new Date().toISOString(),
-    bytes,
   }, null, 2) + '\n');
-
-  console.log(`payload ${hash.slice(0, 12)} — ${(bytes / 1024 / 1024).toFixed(1)} MB`);
-  console.log(`  ${TARBALL}`);
+  console.log(`  ${MANIFEST} (${Object.keys(platforms).join(', ')})`);
 }
 
 main();

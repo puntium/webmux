@@ -1,6 +1,6 @@
 # webmux — server + Electron client (macOS, Linux) build entry points
 
-.PHONY: deps start stop payload client-deps client-test client client-run client-linux clean
+.PHONY: deps start stop host-libs host payload client-deps client-test client client-run client-linux clean
 
 # ---- server (this machine) ------------------------------------------------
 
@@ -13,30 +13,45 @@ start:           ## run the web server (spawns the pty host on demand)
 stop:            ## shut down the pty host daemon (kills all sessions)
 	npm run stop
 
-payload:         ## build the auto-deploy server payload the client pushes over ssh
-	node deploy/build-payload.js
+# ---- native host (host/): webmux-host binaries for the push-deploy payload --
+
+# Both run host/build.sh inside the host/ nix dev shell (zig, go, cmake);
+# docs/native-host.md has the pins and targets.
+host-libs:       ## build libghostty-vt for every target into host/third_party/
+	cd host && nix develop . -c ./build.sh --libs
+
+host:            ## build host/dist/webmux-host-<platform> (libghostty-vt too, if missing)
+	cd host && nix develop . -c ./build.sh
+
+# PAYLOAD_ONLY=linux-x64 builds a single platform's payload (e.g. when only
+# that binary is built; run deploy/build-payload.js directly to skip `host`).
+PAYLOAD_ONLY ?=
+payload: host    ## build the per-platform server payloads the client pushes over ssh
+	node deploy/build-payload.js $(if $(PAYLOAD_ONLY),--only $(PAYLOAD_ONLY),)
 
 # ---- Electron client (electron/): shared targets + macOS build --------------
 
 client-deps:     ## install client dependencies
 	cd electron && npm install
 
-# File-level view of the same two steps, so client-run / client-test can
+# File-level view of the same steps, so client-run / client-test can
 # demand them and stay incremental: the client's node_modules (electron,
 # @xterm, marked — needed even with an electron on PATH) and the server
 # payload main.js looks for at startup (missing → "no server payload
-# bundled" on connect). The payload rule rebuilds when its inputs change;
-# `make payload` forces it.
-PAYLOAD_INPUTS := package.json deploy/build-payload.js deploy/remote-start.js \
-  server.js ptyhost.js ptyhost-client.js $(shell find shims -type f)
+# bundled" on connect). The payload rule rebuilds when its inputs change
+# (the native binaries in host/dist, the shims, the build script) and
+# builds the binaries first if none exist; `make payload` forces it.
+HOST_BINS := $(wildcard host/dist/webmux-host-*)
+PAYLOAD_INPUTS := deploy/build-payload.js $(shell find shims -type f) $(HOST_BINS)
 electron/node_modules: electron/package.json electron/package-lock.json
 	cd electron && npm install
 	@touch $@
 electron/payload/payload.json: $(PAYLOAD_INPUTS)
+	@[ -n "$(HOST_BINS)" ] || $(MAKE) host
 	node deploy/build-payload.js
 
-client-test: electron/node_modules  ## headless harness: profile store, IPC, tunnel state machine; lan.js unit tests
-	cd electron && node test/lan.js && node test/harness.js
+client-test: electron/node_modules  ## headless harness: profile store, IPC, tunnel state machine; lan.js unit tests; local deploy flow
+	cd electron && node test/lan.js && node test/harness.js && node test/deploy-fake.js
 
 # electron-builder's own zip target flattens symlinks when run on Linux,
 # which breaks the frameworks' layout (and their signatures) on the Mac —

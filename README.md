@@ -21,20 +21,31 @@ macOS: Electron client (electron/)
      │         (ui/ + @xterm served from the app bundle)
      └── header strip: one pill per connected host (⌘1…⌘9), Connections page
                                 │  /api/* and /ws over the tunnel
-remote host: ~/.webmux/dist     ▼
-  server.js ── thin, restartable: JSON API + WebSocket termination
+remote host: ~/.webmux/dist/payload/<hash>/webmux-host (one static binary)
+                                ▼
+  webmux-host serve ── thin, restartable: JSON API + WebSocket termination
      │          unix socket $XDG_RUNTIME_DIR/webmux/<name>.http.sock (0600)
-     └── ptyhost.js ── long-lived daemon owning the shells
+     └── webmux-host ptyhost ── long-lived daemon owning the shells
                        unix socket $XDG_RUNTIME_DIR/webmux/<name>.sock
 ```
 
-- **Pty host** (`ptyhost.js`): owns the sessions. Each pairs a PTY
-  (`node-pty`) with a headless terminal (`@xterm/headless`); all PTY output
-  is mirrored into the headless terminal, so buffer, cursor, colors, and
+The server side is `host/`: a Go module built into one statically linked
+`webmux-host` binary per architecture (linux-x64, linux-arm64; glibc and
+musl hosts alike), whose terminal mirror is libghostty-vt
+(`docs/native-host.md`). The node files at the repo root — `server.js`,
+`ptyhost.js`, `ptyhost-client.js`, `deploy/remote-start.js` — are the
+legacy implementation it was ported from. They stay in the tree as the
+reference the port is tested against, speak the same protocols, and
+interoperate with it in both directions, but the client no longer pushes
+them.
+
+- **Pty host** (`webmux-host ptyhost`, `host/internal/ptyhost`): owns the
+  sessions. Each pairs a PTY with a headless terminal (libghostty-vt); all
+  PTY output is mirrored into the headless terminal, so buffer, cursor, colors, and
   modes live in the daemon. It speaks newline-delimited JSON that mirrors
   the WebSocket protocol, runs detached, and stops only on an explicit
   shutdown — restarting or upgrading anything else never kills a shell.
-- **Server** (`server.js`): a thin proxy between WebSockets and the pty
+- **Server** (`webmux-host serve`, `host/internal/server`): a thin proxy between WebSockets and the pty
   host plus a small JSON API (sessions, file browser, clipboard/paste
   shims, browser-open relay). It listens on a unix socket only — filesystem
   permissions and sshd are the whole access story; no TCP port, no TLS, no
@@ -54,20 +65,32 @@ remote host: ~/.webmux/dist     ▼
   localStorage keyed by the `webmux://<host-slug>` origin, so each client
   keeps its own arrangement per host, matching its own screen.
 - **Persistence**: on every attach the pty host serializes the headless
-  buffer (`@xterm/addon-serialize`) and sends it as a `snapshot`; the client
+  buffer (libghostty's VT formatter, scrollback included; on the alternate
+  screen it formats the primary screen from a throwaway clone so vim/less
+  don't hide the history) and sends it as a `snapshot`; the client
   renders exactly what the session looks like now, scrollback included.
 
 Design notes: `docs/electron-client.md` (client, tunnel supervision,
 liveness), `docs/push-deploy.md` (connect-is-deploy flow),
-`docs/restart-resilience.md` (why the pty host exists).
+`docs/restart-resilience.md` (why the pty host exists),
+`docs/native-host.md` (the Go/libghostty server side, build pins, tests).
 
 ## Build and run
 
 ```sh
+make host          # host/build.sh in the host/ nix dev shell → host/dist/webmux-host-linux-{x64,arm64}
+make payload       # host, then electron/payload/<platform>/payload.tar.gz + payload.json
 make client-deps   # cd electron && npm install
 make client        # harness → server payload → electron/dist/webmux-<version>-arm64-mac.zip
 make client-linux  # harness → server payload → electron/dist/webmux-<version>-x86_64-linux.AppImage + -x64-linux.tar.gz
 ```
+
+The server side needs Nix (flakes) and nothing else: `host/flake.nix` pins
+zig and go, and the first `make host` builds libghostty-vt for both
+targets (a few minutes; cached under `host/third_party/` afterwards).
+Without `make`, run the recipes directly: `cd host && nix develop . -c
+./build.sh`, then `node deploy/build-payload.js`. Tests for the server
+side: `docs/native-host.md` › Verification.
 
 ### Linux
 
@@ -92,7 +115,7 @@ Electron build enables it (nixpkgs' does); otherwise set
 To run from source during development:
 
 ```sh
-make payload                      # the server payload the client pushes on connect
+make payload                      # the server payloads the client pushes on connect
 make client-run                   # electron/node_modules/.bin/electron .
 ```
 
@@ -132,9 +155,9 @@ again after each update.
 In the app: **Connections** (⌘⇧O) → add a profile — a name and an ssh host,
 optionally port, identity file, extra ssh options, a saved password
 (Keychain-encrypted; otherwise key auth via BatchMode), and an instance
-name — then **Connect**. The first connect to a host pushes a node runtime
-(~25 MB, cached locally per platform) and the server payload over ssh,
-starts the server, and tunnels to it; later connects reuse what's there.
+name — then **Connect**. The first connect to a host pushes the server
+payload for its platform (one static `webmux-host` binary plus shims) over
+ssh, starts the server, and tunnels to it; later connects reuse what's there.
 Several hosts can be connected at once; pills in the header (drag to
 reorder), ⌘1…⌘9, or ⌘⇧[ / ⌘⇧] (previous / next) switch between them. ⌘⇧R
 reconnects the current host.
@@ -187,11 +210,13 @@ socket, and reattach replays a snapshot. On the client side:
 ### Running the server by hand (development)
 
 ```sh
-npm install   # needs make + g++ for node-pty
-npm start     # listens on $XDG_RUNTIME_DIR/webmux/default.http.sock
+make host                          # or: cd host && nix develop . -c ./build.sh --host-only
+host/dist/webmux-host-linux-x64 serve   # listens on $XDG_RUNTIME_DIR/webmux/default.http.sock
 ```
 
-Useful for hacking on `server.js`/`ptyhost.js` locally — poke it with
+The legacy node reference runs the same way (`npm install` — needs make +
+g++ for node-pty — then `npm start`). Either is useful for hacking on the
+server locally — poke it with
 `curl --unix-socket $XDG_RUNTIME_DIR/webmux/default.http.sock http://localhost/api/sessions`.
 Note that the client replaces a hand-started server with its bundled
 payload on the next connect. Config is env vars only (a deployed payload
@@ -210,14 +235,18 @@ leaves the host — and every shell in it — running; clients reconnect on
 their own. The host only stops on an explicit shutdown:
 
 ```sh
-npm run stop                        # shut down the default host (kills its shells)
-node ptyhost.js --name X shutdown   # shut down a specific host
-node ptyhost.js --name X list       # list a host's sessions
-node ptyhost.js --name X            # run a host standalone in the foreground
+webmux-host ptyhost --name X shutdown   # shut down a specific host (kills its shells)
+webmux-host ptyhost --name X list       # list a host's sessions
+webmux-host ptyhost --name X            # run a host standalone in the foreground
 ```
 
-On a deployed host these run under the pushed node:
-`~/.webmux/dist/node/<platform>/bin/node ~/.webmux/dist/payload/<hash>/ptyhost.js …`.
+On a deployed host the binary is
+`~/.webmux/dist/payload/<hash>/webmux-host`; in a checkout it is
+`host/dist/webmux-host-linux-x64`. The legacy `node ptyhost.js --name X
+list|shutdown` (and `npm run stop`) take the same commands and work
+against either implementation's daemon — the socket protocol is shared, so
+a host that was running the node payload keeps its sessions when the
+first native payload replaces its server.
 
 ## Using the layout
 
@@ -322,7 +351,7 @@ the strip like any other pane.
 ## Protocol
 
 WebSocket at `/ws?session=<id>`, JSON messages; the pty host speaks the
-same frames over its unix socket, and server.js forwards them verbatim.
+same frames over its unix socket, and the server forwards them verbatim.
 
 | direction | type | payload |
 |---|---|---|
@@ -412,12 +441,16 @@ electron/        macOS client: main.js (tunnels, views, IPC), deploy.js (push fl
                  header.html (client-owned pages), ui/ (the frontend), test/
                  (headless harness + lan.js unit tests), pack-mac.js (symlink-
                  keeping zip of the signed .app), payload/ (built)
-server.js        remote API + WebSocket proxy (pushed to hosts as part of the payload)
-ptyhost.js       pty daemon; ptyhost-client.js is its control-socket client
-deploy/          build-payload.js (server tarball), remote-start.js (runs on the host)
+host/            the server side: Go module → static webmux-host (serve · ptyhost · start ·
+                 version), libghostty-vt mirror; build.sh, flake.nix, test/ (e2e,
+                 migration); see host/README.md
+server.js        legacy node server (reference for the port; no longer pushed)
+ptyhost.js       legacy node pty daemon; ptyhost-client.js is its control-socket client
+deploy/          build-payload.js (per-platform payload tarballs from host/dist),
+                 remote-start.js (legacy node starter; now `webmux-host start`)
 shims/           xdg-open / xclip / xsel … stand-ins put on each session's PATH
 docs/            design notes
-Makefile         deps · start · stop · payload · client-deps · client-test · client
+Makefile         host-libs · host · payload · client-deps · client-test · client · deps/start/stop (legacy node)
 ```
 
 Known limitations: one shared size per session (the last attached client's
