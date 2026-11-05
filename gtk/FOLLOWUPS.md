@@ -72,7 +72,8 @@ re-check, 12 judged by reading only, 2 n/a.
   items marked partly.
 
 - [x] **Commits.** Decided 2026-11-05: committed and pushed at your word.
-  The webmux repo's branch `gtk-client` is on `origin`; the fork's branch
+  The webmux repo's branch `gtk-client` is on `origin` and was merged
+  into `main` the same day (a fast-forward); the fork's branch
   `webmux-shell` is on <https://github.com/puntium/ghostty>. Further
   commits and pushes still wait for you to ask.
 - [x] **Where the fork lives.** Decided 2026-11-05: a public GitHub fork
@@ -81,7 +82,7 @@ re-check, 12 judged by reading only, 2 n/a.
   the fork by URL and branch in `gtk/README.md`.
 - [ ] **Pinning the fork from the webmux repo.** Nothing in the webmux
   repo records which fork commit it goes with (no submodule, no pinned
-  hash), and `gtk-client` is not merged into `main`.
+  hash).
 - [ ] **A real ssh target.** The connection engine has never run against a
   real sshd (it would use your keys and write `~/.webmux` on the host).
   Name a host, or allow localhost.
