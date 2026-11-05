@@ -4,3 +4,7 @@ node_modules/
 host/third_party/
 host/dist/
 host/.direnv/
+
+# native Linux client: the Ghostty fork is its own git checkout (see docs/native-client.md)
+gtk/ghostty/
+gtk/wt/

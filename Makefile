@@ -1,6 +1,6 @@
-# webmux — server + Electron client (macOS, Linux) build entry points
+# webmux — server, Electron client (macOS, Linux) and native GTK client build entry points
 
-.PHONY: deps start stop host-libs host payload client-deps client-test client client-run client-linux clean
+.PHONY: deps start stop host-libs host payload client-deps client-test client client-run client-linux linux-client linux-client-run clean
 
 # ---- server (this machine) ------------------------------------------------
 
@@ -101,6 +101,29 @@ LINUX_ARCH ?= x64
 client-linux: client-test payload  ## build the Linux AppImage + tar.gz
 	cd electron && npx electron-builder --linux AppImage tar.gz --$(LINUX_ARCH)
 	@ls -lh electron/dist/*linux* 2>/dev/null || ls -lh electron/dist
+
+# ---- native Linux client (gtk/ghostty): webmux-gtk --------------------------
+
+# A Ghostty fork with a GTK4 shell that speaks the webmux protocol; see
+# gtk/README.md. The fork is its own checkout (ignored by this repo), built
+# by zig inside its nix dev shell. zig decides what is stale, so the build
+# runs every time: a few seconds when nothing changed, about five minutes
+# from cold. GTK_OPTIMIZE=Debug builds faster but parses terminal output
+# about a hundred times slower. Each mode has its own output directory.
+GTK_DIR := gtk/ghostty
+GTK_OPTIMIZE ?= ReleaseFast
+GTK_OUT := $(GTK_DIR)/zig-out$(if $(filter Debug,$(GTK_OPTIMIZE)),,-release)
+linux-client:    ## build the native GTK client (GTK_OPTIMIZE=Debug for a debug build)
+	@[ -f $(GTK_DIR)/build.zig ] || { echo "$(GTK_DIR) is missing: clone it with: git clone -b webmux-shell https://github.com/puntium/ghostty $(GTK_DIR)" >&2; exit 1; }
+	cd $(GTK_DIR) && nix develop . -c zig build -Dapp-runtime=gtk -Dwebmux=true \
+	  -Doptimize=$(GTK_OPTIMIZE) --prefix "$(CURDIR)/$(GTK_OUT)"
+
+# The client pushes the same server payload as the Electron one and finds
+# it by walking up from its binary to electron/payload, so build that first
+# if it is missing or stale. ARGS=… passes arguments to webmux-gtk.
+ARGS ?=
+linux-client-run: linux-client electron/payload/payload.json ## build and run the native GTK client
+	$(GTK_OUT)/bin/webmux-gtk $(ARGS)
 
 clean:           ## remove client build output
 	rm -rf electron/dist electron/payload
