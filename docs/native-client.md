@@ -39,7 +39,8 @@ gtk/
   PARITY.md                 feature checklist derived from electron/ (definition of done)
   ghostty/                  the fork: a git checkout of ghostty-org/ghostty at f54340ad
                             (same pin as host/), branch `webmux-shell`. Its own git
-                            repository; ignored by the webmux repo for now.
+                            repository (github.com/puntium/ghostty), a submodule
+                            of the webmux repo since 2026-11-05.
     src/apprt/webmux.zig    apprt entry (App, Surface, resourcesDir)
     src/apprt/webmux/       the shell: application, window, header, connection page,
                             terminal pane, layout strip, file browser, settings, log
@@ -56,7 +57,8 @@ gtk/
                             complete list of edits to pre-existing Ghostty files
   audit/                    the parity audit's findings, one file per auditor
   wt/<area>/                clones of the fork for engineers working in parallel;
-                            merged into gtk/ghostty by the lead. Ignored by the repo.
+                            merged into gtk/ghostty by the lead. Used during the
+                            build only; gone now.
 docs/native-client.md       this file
 ```
 

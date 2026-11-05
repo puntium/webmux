@@ -1,0 +1,4 @@
+[submodule "gtk/ghostty"]
+	path = gtk/ghostty
+	url = https://github.com/puntium/ghostty
+	branch = webmux-shell

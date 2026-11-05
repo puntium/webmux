@@ -78,11 +78,12 @@ re-check, 12 judged by reading only, 2 n/a.
   commits and pushes still wait for you to ask.
 - [x] **Where the fork lives.** Decided 2026-11-05: a public GitHub fork
   of ghostty-org/ghostty, <https://github.com/puntium/ghostty>, branch
-  `webmux-shell`. The webmux repo still ignores `gtk/ghostty` and names
-  the fork by URL and branch in `gtk/README.md`.
-- [ ] **Pinning the fork from the webmux repo.** Nothing in the webmux
-  repo records which fork commit it goes with (no submodule, no pinned
-  hash).
+  `webmux-shell`.
+- [x] **Pinning the fork from the webmux repo.** Decided 2026-11-05:
+  `gtk/ghostty` is a git submodule, so each webmux commit records the
+  fork commit it goes with. A commit in the fork needs a follow-up commit
+  here to move the pointer; push the fork first, or the pointer names a
+  commit nobody else can fetch.
 - [ ] **A real ssh target.** The connection engine has never run against a
   real sshd (it would use your keys and write `~/.webmux` on the host).
   Name a host, or allow localhost.

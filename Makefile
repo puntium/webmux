@@ -105,7 +105,7 @@ client-linux: client-test payload  ## build the Linux AppImage + tar.gz
 # ---- native Linux client (gtk/ghostty): webmux-gtk --------------------------
 
 # A Ghostty fork with a GTK4 shell that speaks the webmux protocol; see
-# gtk/README.md. The fork is its own checkout (ignored by this repo), built
+# gtk/README.md. The fork is a git submodule (github.com/puntium/ghostty), built
 # by zig inside its nix dev shell. zig decides what is stale, so the build
 # runs every time: a few seconds when nothing changed, about five minutes
 # from cold. GTK_OPTIMIZE=Debug builds faster but parses terminal output
@@ -114,7 +114,7 @@ GTK_DIR := gtk/ghostty
 GTK_OPTIMIZE ?= ReleaseFast
 GTK_OUT := $(GTK_DIR)/zig-out$(if $(filter Debug,$(GTK_OPTIMIZE)),,-release)
 linux-client:    ## build the native GTK client (GTK_OPTIMIZE=Debug for a debug build)
-	@[ -f $(GTK_DIR)/build.zig ] || { echo "$(GTK_DIR) is missing: clone it with: git clone -b webmux-shell https://github.com/puntium/ghostty $(GTK_DIR)" >&2; exit 1; }
+	@[ -f $(GTK_DIR)/build.zig ] || { echo "$(GTK_DIR) is missing: fetch it with: git submodule update --init $(GTK_DIR)" >&2; exit 1; }
 	cd $(GTK_DIR) && nix develop . -c zig build -Dapp-runtime=gtk -Dwebmux=true \
 	  -Doptimize=$(GTK_OPTIMIZE) --prefix "$(CURDIR)/$(GTK_OUT)"
 

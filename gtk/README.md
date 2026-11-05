@@ -7,7 +7,7 @@ client feature for feature.
 | What | Where |
 | --- | --- |
 | The contract: goal, architecture, rulings, deliberate deviations, status | `../docs/native-client.md` |
-| The fork: <https://github.com/puntium/ghostty>, branch `webmux-shell` (ghostty-org/ghostty at `f54340ad` plus one commit so far). A separate checkout, ignored by this repo | `ghostty/` |
+| The fork: <https://github.com/puntium/ghostty>, branch `webmux-shell` (ghostty-org/ghostty at `f54340ad` plus our commits). A git submodule of this repo, which pins the fork commit | `ghostty/` |
 | How to build, run headless, test, and the list of edits to Ghostty's own files | `ghostty/WEBMUX.md` |
 | Feature checklist with a status per item | `PARITY.md` |
 | Audit, re-check and final-check reports | `audit/` |
@@ -16,7 +16,7 @@ client feature for feature.
 ## Build
 
 ```sh
-git clone -b webmux-shell https://github.com/puntium/ghostty gtk/ghostty   # once, from the repo root
+git submodule update --init gtk/ghostty   # once, from the repo root
 cd gtk/ghostty
 webmux-dev/build                      # Debug: zig-out/bin/webmux-gtk
 nix develop . -c zig build -Dapp-runtime=gtk -Dwebmux=true \
