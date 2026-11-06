@@ -10,8 +10,8 @@ Each item says where it came from. "Reported" means an engineer agent
 observed it and the lead has not re-checked it; "verified" means the lead
 re-ran or read it.
 
-Last updated: 2026-11-05, after the header bar change that followed the first run on a real desktop
-(all smokes pass on the Debug and release binaries). `gtk/PARITY.md`
+Last updated: 2026-11-06, after the rendering performance work (section
+6a; every smoke passes on the Debug and release binaries). `gtk/PARITY.md`
 carries a status per item: 300 of 317 ticked, 3 awaiting an independent
 re-check, 12 judged by reading only, 2 n/a.
 
@@ -560,6 +560,45 @@ is untouched.
   listed in `gtk/ghostty/WEBMUX.md`).
 - [ ] `docs/native-client.md` › "Zig 0.17 notes" and the same section in
   `gtk/ghostty/WEBMUX.md` overlap; fold them together at the end.
+
+## 6a. Rendering performance (from the 2026-11-06 work; see `gtk/ghostty/WEBMUX.md` › Performance)
+
+Measured with `webmux-dev/perf` in a headless compositor at 6K; none of it
+has been measured under mutter on the real display.
+
+- [ ] **Your look on the real display.** The headless run went from 53
+  missed refreshes to 3 to 5 over 36 animations. Yours to confirm on
+  the XDR: that it is smooth, that a terminal taking its new size at the
+  end of a move (instead of during it) reads well, and that the longer
+  moves (up to 320 ms) suit you. `WEBMUX_GTK_PERF=1` prints one line per
+  animation on stderr.
+- [ ] **Offload on mutter.** `WEBMUX_GTK_OFFLOAD=1` puts the focused
+  terminal on a subsurface. It made no difference under sway headless;
+  untested under mutter. Off by default until measured there.
+- [ ] **Closing a pane blocks the main thread** for the WebSocket close
+  handshake (`termio/webmux/Client.zig` `stop`, 250 ms and more; 636 ms
+  seen once). It now happens after the closing animation's last frame
+  instead of before it, but it still freezes the window (and a scroll in
+  flight) for that long. Starting the handshake when the pane starts to
+  leave, or doing it off the main thread, would remove it.
+- [ ] **A resized or new terminal stalls GSK's frame** while its renderer
+  allocates (xe: `GEM_CREATE` on one thread blocks `EXEC` on another on
+  the same DRM file; 50 to 150 ms at 6K). The strip now keeps terminals
+  still while it moves, so the stall lands after the move, where it only
+  delays the terminal's own repaint. A window resize still pays it on
+  every step. Upstream's renderer could keep its targets when a pane
+  shrinks, or allocate them off the swap chain's path.
+- [ ] **Ghostty's renderer draws every frame twice** (an sRGB texture,
+  then a blit into an exportable one; `renderer/opengl/Target.zig`), and
+  exports the whole frame whatever changed, so GSK and the compositor
+  redraw the whole pane for one cell. At 6K a full-width terminal
+  printing at 60 Hz takes about 40% of the GPU. Upstream code; a damage
+  region on the exported frame (`GdkDmabufTextureBuilder` has
+  `update-region`) would cut GSK's and the compositor's share.
+- [ ] **GSK builds shader programs on first use**, on the main thread: the
+  first few animations after launch have one long frame each (5 to 25 ms
+  with a warm Mesa cache). Drawing one of each node and clip kind into an
+  offscreen at startup would move that out of the way; not tried.
 
 ## 7. Ideas raised earlier, not pursued
 

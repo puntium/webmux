@@ -471,6 +471,31 @@ shell. A local host for tests needs no ssh:
     dialog is no longer forced to float, so in a small window it is a
     bottom sheet, where a click outside closes it. Overrides M-03, M-04 and
     the backdrop in E-10 in `gtk/PARITY.md`.
+69. Layout animations are tuned for a large display on an integrated GPU
+    (the user's direction, 2026-11-06, after the strip stuttered on a 6K
+    display; measurements and reasons in `gtk/ghostty/WEBMUX.md` ›
+    Performance). Where that differs from the Electron client:
+    - A move takes 200 ms up to 600 px of travel and longer beyond that,
+      growing with the square root of the distance to at most 320 ms
+      (app.js: always 200 ms). Overrides the 200 ms in L-31.
+    - A move ends on the frame clock. A frame that comes late does not
+      make the motion skip ahead; the move runs late instead, by up to
+      250 ms. The timeout that ends a move whose clock is not running
+      fires 50 ms after the move should have ended and waits while frames
+      are still being drawn. Overrides L-39's 250 ms bound.
+    - While the strip moves (a layout animation, and the scroll that
+      follows it), terminals hold still: a terminal whose pane changed
+      size keeps drawing at its old size and takes the new one (and tells
+      the host) once the move's last frame is out; a new terminal attaches
+      at once but draws nothing until it has arrived; a closed pane is
+      torn down after that frame. The Electron client refits at the start.
+      Still one resize per pane per change (L-31).
+    - A new pane fades in under the strip's colour at 1 − p instead of at
+      opacity p, which looks the same over the strip (L-33).
+    - Offsets and clips of moving things, and the strip's scroll offset,
+      sit on device pixels (whole CSS pixels in app.js).
+    The unfocused fade (L-24) gives the same pixels as before, by a colour
+    matrix on the terminal's texture instead of two quads over it.
 
 (Add to this list; do not silently differ.)
 

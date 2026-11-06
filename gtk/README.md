@@ -59,6 +59,18 @@ Everything runs under a nested headless compositor with an isolated host
 or a fake ssh; nothing touches the desktop session, real ssh, or your
 config, keys or keyring.
 
+How smooth the animations are, measured the same way at a 6K output:
+
+```sh
+cd gtk/ghostty
+nix develop . -c webmux-dev/perf            # one row per animation
+nix develop . -c webmux-dev/perf --help     # what the columns mean
+```
+
+On the real display, `WEBMUX_GTK_PERF=1` in the app's environment prints
+one line per animation on stderr. The design and the numbers are in
+`ghostty/WEBMUX.md` › Performance.
+
 ## Run
 
 ```sh
