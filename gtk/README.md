@@ -28,11 +28,32 @@ output about a hundred times slower.
 
 ## Test
 
+While iterating, from the repo root:
+
+```sh
+make linux-client-try        # release build, quick smokes, then the app
+make linux-client-quick      # the same without running the app
+```
+
+The quick smokes take about a minute: `smoke-integration`,
+`workspace/smoke` and `smoke-host`, side by side. They cover connecting,
+two hosts, the workspace, settings, the link chooser, keys over dialogs,
+reconnecting and a clean quit. They leave out the file browser
+(`smoke-files`), most terminal detail such as paste, OSC and real-pointer
+selection (`smoke-pane`), the log window and settings detail
+(`panels/smoke.sh`), and the connection forms and keyring (`smoke-chrome`).
+
+Before a final commit, the full suite, on both binaries:
+
 ```sh
 cd gtk/ghostty
 webmux-dev/smoke --all                                         # Debug binary
 WEBMUX_GTK_BIN=$PWD/zig-out-release/bin/webmux-gtk webmux-dev/smoke --all
 ```
+
+It runs two smokes at a time; `-j N` changes that. A binary has to sit
+under this checkout, because the client finds `electron/payload` by walking
+up from itself.
 
 Everything runs under a nested headless compositor with an isolated host
 or a fake ssh; nothing touches the desktop session, real ssh, or your

@@ -1,6 +1,6 @@
 # webmux — server, Electron client (macOS, Linux) and native GTK client build entry points
 
-.PHONY: deps start stop host-libs host payload client-deps client-test client client-run client-linux linux-client linux-client-run clean
+.PHONY: deps start stop host-libs host payload client-deps client-test client client-run client-linux linux-client linux-client-run linux-client-quick linux-client-try clean
 
 # ---- server (this machine) ------------------------------------------------
 
@@ -123,6 +123,14 @@ linux-client:    ## build the native GTK client (GTK_OPTIMIZE=Debug for a debug 
 # if it is missing or stale. ARGS=… passes arguments to webmux-gtk.
 ARGS ?=
 linux-client-run: linux-client electron/payload/payload.json ## build and run the native GTK client
+	$(GTK_OUT)/bin/webmux-gtk $(ARGS)
+
+# The edit-and-try loop: about a minute of smokes on the binary just built,
+# then the app. The full suite (webmux-dev/smoke --all) is for the final commit.
+linux-client-quick: linux-client electron/payload/payload.json ## build, then the quick smokes
+	cd $(GTK_DIR) && WEBMUX_GTK_BIN="$(CURDIR)/$(GTK_OUT)/bin/webmux-gtk" nix develop . -c webmux-dev/smoke --quick
+
+linux-client-try: linux-client-quick ## build, quick smokes, then run the native GTK client
 	$(GTK_OUT)/bin/webmux-gtk $(ARGS)
 
 clean:           ## remove client build output
