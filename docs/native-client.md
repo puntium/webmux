@@ -458,9 +458,19 @@ shell. A local host for tests needs no ssh:
     password hint into its row's title. Settings has no Done button (the
     dialog's close button instead). While the dialog is up the header is
     dimmed like the rest of the window, so pills, ☰ and ⚙ cannot be
-    clicked; a click there closes the dialog, as on any backdrop. App
-    shortcuts still work. Overrides W-04, W-05 (for the dialog), W-17,
+    clicked. App shortcuts still work. Overrides W-04, W-05 (for the dialog), W-17,
     W-20…W-32 and E-10…E-14 in `gtk/PARITY.md`.
+68. The link chooser is a native `AdwAlertDialog` with the heading `Link
+    options`, not a copy of the Electron modal, so `panels/ui.zig` and the
+    `.modal*` CSS are gone. It uses libadwaita's colours and sizes. Its
+    buttons stack in a narrow window. The URL scrolls with the dialog's
+    message area instead of stopping at 30% of the window height.
+    A click on the backdrop no longer closes the chooser or the preferences
+    dialog: libadwaita's floating dialogs have no such behaviour, and it
+    needed a hook on a private widget. Escape closes both. The preferences
+    dialog is no longer forced to float, so in a small window it is a
+    bottom sheet, where a click outside closes it. Overrides M-03, M-04 and
+    the backdrop in E-10 in `gtk/PARITY.md`.
 
 (Add to this list; do not silently differ.)
 

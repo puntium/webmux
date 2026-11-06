@@ -100,10 +100,9 @@ re-check, 12 judged by reading only, 2 n/a.
   your icon theme, that opening it over the terminal at Ctrl+Shift+O suits
   you, and that the dialog opening by itself at startup and after the last
   disconnect does not get in the way.
-- [ ] **The link chooser and the log window still use the Electron
-  look.** The chooser is the only remaining user of `panels/ui.zig` and
-  the `.modal*` CSS; `AdwAlertDialog` would remove both. The log window
-  (1,000 lines plus its palette) is the larger candidate.
+- [ ] **The log window still uses the Electron look** (1,000 lines plus
+  its palette), the largest remaining candidate. The link chooser is now
+  an `AdwAlertDialog` (deviation 68).
 - [ ] **Review the deliberate deviations** in `docs/native-client.md`
   (15 so far), in particular: unix-socket tunnel end instead of a TCP
   port; a second live connection to the same host+instance is refused;
