@@ -93,6 +93,17 @@ re-check, 12 judged by reading only, 2 n/a.
   `gtk/PARITY.md` (new Ctrl+Shift+C copy, menu button instead of the
   hidden menu bar, no reload command, clipboard-image sync scope,
   PNG conversion of unsupported images, first-run profile import).
+- [ ] **One preferences dialog, after your first look (2026-11-05).**
+  Connections and Settings are now one `AdwPreferencesDialog` (deviation
+  67). Checked headlessly: all smokes, screenshots in both schemes, real
+  pointer and keys. Yours to confirm on a real desktop: how it looks with
+  your icon theme, that opening it over the terminal at Ctrl+Shift+O suits
+  you, and that the dialog opening by itself at startup and after the last
+  disconnect does not get in the way.
+- [ ] **The link chooser and the log window still use the Electron
+  look.** The chooser is the only remaining user of `panels/ui.zig` and
+  the `.modal*` CSS; `AdwAlertDialog` would remove both. The log window
+  (1,000 lines plus its palette) is the larger candidate.
 - [ ] **Review the deliberate deviations** in `docs/native-client.md`
   (15 so far), in particular: unix-socket tunnel end instead of a TCP
   port; a second live connection to the same host+instance is refused;

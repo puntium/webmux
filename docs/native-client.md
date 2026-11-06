@@ -297,7 +297,7 @@ shell. A local host for tests needs no ssh:
     placeholder before it has content (the Electron client shows a blank
     page).
 24. Zoom scales the visible host's terminal panes only.
-25. Pane menu items stay enabled on the connection page and do nothing.
+25. Pane menu items stay enabled with no host in front and do nothing.
 26. Link chooser: for `mailto:` the button opens the default mail
     application (dead in the Electron client); other non-http schemes
     offer Copy only. Plain clicks and shift-clicks act only on http(s).
@@ -319,7 +319,7 @@ shell. A local host for tests needs no ssh:
 31. App shortcuts still run while a dialog is open (for example
     Ctrl+Shift+O over the settings dialog); only pane chords are blocked
     there, as PARITY K-18 requires.
-32. The settings panel opens from the connection page as well (E-10).
+32. Settings opens with no host in front as well (E-10).
 33. WebP and AVIF images do not preview (no loader in the app's
     environment); the Electron client previews what Chromium decodes
     (F-33).
@@ -440,6 +440,27 @@ shell. A local host for tests needs no ssh:
     menu. With no connection open the centre reads "webmux". The pills
     keep their look. Overrides W-02 (height), W-10 and W-17 (button
     styling) in `gtk/PARITY.md`.
+67. Connections and Settings are one native `AdwPreferencesDialog` with
+    two pages, Connections and General, not copies of the Electron
+    connection page and settings modal (the user's direction, 2026-11-05).
+    They use libadwaita's rows, spacing and colours, so the Electron
+    palettes are gone from them; the status dots use the header's colours.
+    Under the dialog the window shows a small landing view when no host is
+    in front. The dialog opens at startup, when the front host disconnects
+    and when a connection that never came up fails; Ctrl+Shift+O opens it
+    over the host in front, which stays in front. Showing a host closes
+    it. The dialog stays alive when closed, so a half-typed form is still
+    there when it reopens; opening Settings cancels the form. A click on a
+    profile row opens its form as a subpage, which also has Restart
+    Sessions and Delete Profile (no ⋯ menu), and these ask in an alert
+    dialog instead of relabelling in place. `AdwEntryRow` has no
+    placeholder text: the examples moved into group descriptions and the
+    password hint into its row's title. Settings has no Done button (the
+    dialog's close button instead). While the dialog is up the header is
+    dimmed like the rest of the window, so pills, ☰ and ⚙ cannot be
+    clicked; a click there closes the dialog, as on any backdrop. App
+    shortcuts still work. Overrides W-04, W-05 (for the dialog), W-17,
+    W-20…W-32 and E-10…E-14 in `gtk/PARITY.md`.
 
 (Add to this list; do not silently differ.)
 
