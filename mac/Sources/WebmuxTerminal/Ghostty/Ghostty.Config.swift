@@ -2,11 +2,11 @@
 // trimmed for webmux; see docs/macos-client.md.
 //
 // webmux never reads ~/.config/ghostty, CLI args or `config-file` includes: the
-// configuration is built from a string (Terminal/TerminalConfig.swift). The C API
-// has no "load from string" entry point, so `init(text:)` writes the text to a
-// private file and loads that; a `ghostty_config_load_string` in the fork would
-// remove the detour. Dropped: every window/tab/quick-terminal/notification getter;
-// SwiftUI `Color` became `NSColor`.
+// configuration is built from a string (Terminal/TerminalConfig.swift) through the
+// fork's `ghostty_config_load_string`, and `ghostty_config_webmux_links` (after
+// finalize) makes URLs underline on hover and open on a plain click, as the GTK
+// client's config.zig does. Dropped: every window/tab/quick-terminal/notification
+// getter; SwiftUI `Color` became `NSColor`.
 import AppKit
 import GhosttyKit
 
@@ -72,24 +72,18 @@ extension Ghostty {
                 return nil
             }
 
-            // The C API only loads files, so write the text to a private
-            // temporary file and load that.
-            let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("me.puntium.webmux.mac", isDirectory: true)
-            let file = dir.appendingPathComponent("ghostty-\(UUID().uuidString).conf")
-            do {
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                try text.write(to: file, atomically: true, encoding: .utf8)
-            } catch {
-                logger.critical("cannot write config text: \(error, privacy: .public)")
-                ghostty_config_free(cfg)
-                return nil
+            var bytes = Array(text.utf8)
+            bytes.withUnsafeMutableBufferPointer { buf in
+                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
+                    ghostty_config_load_string(cfg, ptr, UInt(buf.count))
+                }
             }
-            defer { try? FileManager.default.removeItem(at: file) }
-            ghostty_config_load_file(cfg, file.path)
 
             // Finalize will make our defaults available.
             ghostty_config_finalize(cfg)
+            // Links as in the Electron client: underline on hover, open on a
+            // plain click, xterm.js's URL regex (PARITY T-24/T-25).
+            ghostty_config_webmux_links(cfg)
 
             // Log any configuration errors.
             let diagsCount = ghostty_config_diagnostics_count(cfg)

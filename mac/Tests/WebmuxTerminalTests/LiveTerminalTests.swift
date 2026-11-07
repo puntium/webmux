@@ -427,6 +427,64 @@ final class LiveTerminalTests: XCTestCase {
         XCTAssertEqual(pane.alphaValue, 1, accuracy: 0.01)
     }
 
+    func testOSC8HyperlinkUnderThePointer() throws {
+        // T-25: an OSC 8 hyperlink is a link like a plain URL: the fork reports the
+        // URI at the cell, the pane treats an http(s) one as hovered (pointer,
+        // click opens / Shift+click copies). The text itself carries no URL.
+        guard let pane else { return }
+        // The command must stay well under one row (the shell's line editor
+        // wraps a column early): `point(of:)` counts text rows, and a wrapped
+        // command would shift them. "click tail" occurs only in the output.
+        try run("printf '\\033]8;;https://ex.io/o\\033\\\\click\\033]8;;\\033\\\\ tail\\n'", expect: "click tail")
+        pump(0.3)
+        guard let p = point(of: "click tail"), let q = point(of: "tail") else { return XCTFail("output row not found: \(pane.visibleText())") }
+        XCTAssertEqual(pane.osc8URL(at: p), "https://ex.io/o")
+        XCTAssertEqual(pane.link(at: p)?.match.url, "https://ex.io/o")
+        XCTAssertNil(pane.osc8URL(at: q), "the text after the link")
+        XCTAssertNil(pane.link(at: q))
+        guard let move = mouse(.mouseMoved, at: p) else { return }
+        pane.mouseMoved(with: move)
+        XCTAssertEqual(pane.hoveredURL, "https://ex.io/o")
+    }
+
+    func testKittyKeyboardQuery() throws {
+        // T-13 (deviation 13 lifted): the fork reports the kitty keyboard flags of
+        // the active screen; the pane skips its xterm.js fixups while they are on.
+        guard let pane else { return }
+        XCTAssertFalse(pane.kittyKeyboardActive)
+        try run("printf '\\033[>1u'; echo kon", expect: "kon")
+        pump(0.2)
+        XCTAssertTrue(pane.kittyKeyboardActive, "CSI > 1 u pushed flags")
+        try run("printf '\\033[<u'; echo koff", expect: "koff")
+        pump(0.2)
+        XCTAssertFalse(pane.kittyKeyboardActive, "CSI < u popped them")
+    }
+
+    func testAltClickMovesTheCursor() throws {
+        // T-20: Alt+click on the cursor's row sends one arrow key per cell between
+        // the cursor and the clicked cell; `cat -v` shows them. The tty echoes the
+        // ESC as ^[ as it arrives.
+        type("stty -echo -icanon; cat -v\n")
+        pump(0.5)
+        guard let pane else { return }
+        let rows = pane.visibleText().split(separator: "\n", omittingEmptySubsequences: false)
+        guard let cmdRow = rows.lastIndex(where: { $0.contains("cat -v") }) else { return XCTFail("no command row") }
+        let row = cmdRow + 1  // the cursor sits at column 0 of the line after the command
+        let cell = pane.cellSize
+        let x = TerminalConfig.padding + CGFloat(3) * cell.width + 1
+        let topY = TerminalConfig.padding + CGFloat(row) * cell.height + 1
+        let p = NSPoint(x: x, y: pane.bounds.height - topY)
+        guard let down = mouse(.leftMouseDown, at: p, flags: .option), let up = mouse(.leftMouseUp, at: p, flags: .option) else { return }
+        pane.mouseMoved(with: down)
+        pane.mouseDown(with: down)
+        pane.mouseUp(with: up)
+        try waitUntil("three right arrows", timeout: 5) { pane.visibleText().contains("^[[C^[[C^[[C") }
+        XCTAssertFalse(pane.visibleText().contains("^[[C^[[C^[[C^[[C"), "exactly three")
+        press(Self.keyCodes["d"]!, .control)
+        pump(0.3)
+        type("stty echo icanon\n")
+    }
+
     func testExitReachesTheDelegate() throws {
         guard let pane else { return }
         type("exit 7\n")

@@ -19,13 +19,14 @@
 // `shell-integration` are irrelevant (the shell runs on the remote host) and kept
 // only so the two files diff cleanly.
 //
-// What the GTK client sets in Zig after `finalize` and this file cannot express:
-// the URL link highlighted on *hover without a modifier* and matched with
-// xterm.js's regex (T-24/T-25). Ghostty's `link` key has no file syntax
-// (`RepeatableLink.parseCLI` is NotImplemented) and the default link needs ⌘ for
-// hover and click. Until the fork exports a `ghostty_config_webmux_links()` the
-// pane detects URLs itself for clicks (TerminalLinks.swift) and the underline on
-// hover needs ⌘ (see docs/macos-client.md deviations).
+// What this file cannot express, because Ghostty's `link` key has no file syntax
+// (`RepeatableLink.parseCLI` is NotImplemented): the URL link highlighted on
+// *hover without a modifier* and matched with xterm.js's regex (T-24/T-25).
+// `Ghostty.Config(text:)` applies it after `finalize` through the fork's
+// `ghostty_config_webmux_links` (the same code the GTK client runs,
+// src/config/webmux.zig). The pane still detects URLs itself for the click
+// (TerminalLinks.swift), so a click that the program gets (mouse reporting)
+// opens the link too.
 import Foundation
 
 public enum TerminalConfig {

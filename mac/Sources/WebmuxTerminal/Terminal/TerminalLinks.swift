@@ -3,11 +3,13 @@
 // URL under the pointer is found in a row of text, and the per-host dedupe of the
 // host's `open-url` relay frames.
 //
-// Detection is done here, in Swift, over the row text read from the core
-// (`ghostty_surface_read_text`) rather than by the core's own link matcher,
-// because the core's default link needs ⌘ for hover and click and the config file
-// syntax cannot change that (see TerminalConfig.swift). The regex is the xterm.js
-// web-links addon's `strictUrlRegex`, the same one the GTK client installs.
+// Detection for the click is done here, in Swift, over the row text read from
+// the core (`ghostty_surface_read_text`), so a click the program gets (mouse
+// reporting) still opens the link and Shift+click can copy it; the core's own
+// link rule (installed by `ghostty_config_webmux_links`, see TerminalConfig.swift)
+// does the hover underline with the same regex, the xterm.js web-links addon's
+// `strictUrlRegex`. OSC 8 hyperlinks come from the core's cell state
+// (`TerminalPaneView.osc8URL(at:)`).
 import Foundation
 
 /// What a URL is, for the click rules (T-24/T-25, GTK deviation 26).

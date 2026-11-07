@@ -8,12 +8,16 @@
 //              is Ghostty's encoding (⌥ as ESC prefix, T-12/T-13). ⌘ chords never
 //              reach the pty: the workspace consumes them first and the core does
 //              not encode ⌘ keys on macOS.
-//   links      http(s) URLs are detected in the row under the pointer (TerminalLinks);
-//              a click opens the browser, Shift+click copies (T-24), also while the
-//              program has mouse reporting on (the click is still reported). The
-//              core's own link clicks (⌘-click, OSC 8) arrive as `.ghosttyOpenURL`;
-//              mailto:/other schemes and the host's `open-url` relay (deduped by id,
-//              C-11) go to `chooseLink`.
+//   links      http(s) URLs are detected in the row under the pointer (TerminalLinks)
+//              and OSC 8 hyperlinks asked of the fork (`ghostty_surface_webmux_osc8_at`,
+//              T-25); a click opens the browser, Shift+click copies (T-24), also while
+//              the program has mouse reporting on (the click is still reported). The
+//              core underlines URLs on hover by itself (the config's link rule) and
+//              its own link clicks (⌘-click, ⌘-click on a non-http OSC 8) arrive as
+//              `.ghosttyOpenURL`; mailto:/other schemes and the host's `open-url` relay
+//              (deduped by id, C-11) go to `chooseLink`.
+//   Alt+click  moves the shell cursor to the clicked cell by arrow keys (T-20), done
+//              by the fork from the core's cursor state (`ghostty_surface_webmux_alt_click`).
 //   clipboard  OSC 52 writes land on the pasteboard (Ghostty.App) and show a status;
 //              `syncClipboardImageIfAny()` is the C-09 sync the chrome calls on focus.
 //   scrollbar  an overlay `TerminalScrollbar` on the right edge (T-10) fed by the core's
@@ -22,9 +26,6 @@
 //   fade       `setUnfocused(fade:)` dims the pane like the Electron overlay (L-24).
 //   lifecycle  exit / sessionError / linkUp / linkDown / snapshot are the base class's
 //              delegate calls; `isDegraded` is the S-12 flag per pane.
-//
-// Not here (needs a fork change, see the report): URL underline on hover without ⌘,
-// a plain click on an OSC 8 hyperlink, Alt+click cursor moves (T-20).
 import AppKit
 import os
 import GhosttyKit
@@ -80,6 +81,8 @@ public class TerminalPaneView: WebmuxSurfaceView {
     }
     private var pendingLink: PendingLink?
     private var coreOpenedLink = false
+    /// Where the left button went down (T-20: Alt+click must release on the same cell).
+    private var leftPressCell: Cell?
     private var observers: [NSObjectProtocol] = []
 
     // MARK: Scrolling
@@ -240,7 +243,9 @@ public class TerminalPaneView: WebmuxSurfaceView {
         // the core would not encode its text either, but it would encode ⌘↩ as a
         // plain Return.
         if mods.contains(.command) { return }
-        if let fix = XtermKeys.fixup(for: event) {
+        // T-13: the xterm.js fixups only while the program has not asked for the
+        // kitty keyboard protocol; with it on, every key is Ghostty's encoding.
+        if !kittyKeyboardActive, let fix = XtermKeys.fixup(for: event) {
             switch fix {
             case .drop: break
             case .text(let t): _ = surfaceModel?.perform(action: "text:\(t)")
@@ -251,11 +256,17 @@ public class TerminalPaneView: WebmuxSurfaceView {
         super.keyDown(with: event)
     }
 
+    /// True while the program has the kitty keyboard protocol enabled on the
+    /// active screen (the fork reads the core's state).
+    public var kittyKeyboardActive: Bool {
+        guard let surface else { return false }
+        return ghostty_surface_webmux_kitty_keyboard(surface)
+    }
+
     /// Where Ghostty's legacy key encoding differs from xterm.js 5.5 (PARITY T-13;
     /// the GTK client ports all of xterm's Keyboard.ts, terminal/xterm_keys.zig).
-    /// Measured on this Mac against `cat -v`; everything else matched. These apply
-    /// whether or not the program enabled the kitty keyboard protocol, because the
-    /// C API does not expose that state (a fork change would).
+    /// Measured on this Mac against `cat -v`; everything else matched. Skipped
+    /// while the kitty keyboard protocol is on (`kittyKeyboardActive`).
     enum XtermKeys {
         enum Fix: Equatable {
             case drop
@@ -441,9 +452,23 @@ public class TerminalPaneView: WebmuxSurfaceView {
         return String(cString: ptr)
     }
 
-    /// The http(s) URL under a point, if any.
+    /// The OSC 8 hyperlink at a point (any scheme), from the core's cell state.
+    public func osc8URL(at point: NSPoint) -> String? {
+        guard let surface else { return nil }
+        let str = ghostty_surface_webmux_osc8_at(surface, point.x, bounds.height - point.y)
+        guard let ptr = str.ptr, str.len > 0 else { return nil }
+        defer { ghostty_string_free(str) }
+        return String(decoding: UnsafeRawBufferPointer(start: ptr, count: Int(str.len)), as: UTF8.self)
+    }
+
+    /// The http(s) URL under a point, if any: an OSC 8 hyperlink first (T-25;
+    /// its match covers just that cell, the hyperlink's extent is the core's), then
+    /// a URL in the row's text (T-24).
     func link(at point: NSPoint) -> (match: TerminalLinks.Match, row: Int)? {
         guard let cell = cell(at: point) else { return nil }
+        if let uri = osc8URL(at: point), LinkKind(url: uri) == .http {
+            return (TerminalLinks.Match(url: uri, range: cell.col..<(cell.col + 1)), cell.row)
+        }
         guard let match = TerminalLinks.url(in: rowText(cell.row), atColumn: cell.col) else { return nil }
         return (match, cell.row)
     }
@@ -482,6 +507,7 @@ public class TerminalPaneView: WebmuxSurfaceView {
         coreOpenedLink = false
         let point = convert(event.locationInWindow, from: nil)
         let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        leftPressCell = cell(at: point)
         updateHover(at: point)
         if let hovered = hoveredLink, let cell = cell(at: point), mods.isDisjoint(with: [.control, .option, .command]) {
             // A click (or Shift+click) on a link. If the program gets the click
@@ -515,8 +541,19 @@ public class TerminalPaneView: WebmuxSurfaceView {
     }
 
     public override func mouseUp(with event: NSEvent) {
+        let pressCell = leftPressCell
+        leftPressCell = nil
         guard let pl = pendingLink else {
             super.mouseUp(with: event)
+            // T-20: Alt+click (no drag, the program not reporting the mouse)
+            // moves the shell cursor to the cell.
+            let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
+            if mods == [.option], let pressCell, let surface, !mouseReportingActive {
+                let point = convert(event.locationInWindow, from: nil)
+                if let release = cell(at: point), release == pressCell {
+                    _ = ghostty_surface_webmux_alt_click(surface, point.x, bounds.height - point.y)
+                }
+            }
             return
         }
         pendingLink = nil

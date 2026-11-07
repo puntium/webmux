@@ -1,6 +1,6 @@
 # Native macOS client: `webmux.app` (Swift/AppKit shell on GhosttyKit)
 
-Status (2026-11-07): **phases 1–3 done (seam, GhosttyKit, dev host; Swift foundation; the four feature areas, integrated into one app); phase 4 (audit against PARITY on a real host) in progress.** This is the
+Status (2026-11-07): **phases 1–3 done (seam, GhosttyKit, dev host; Swift foundation; the four feature areas, integrated into one app); phase 4: the fork pass is done, the audit against PARITY on a real host is next.** This is the
 contract the client is built against, in the spirit of
 [native-client.md](native-client.md) (the Linux client). It is deliberately
 specific; when the code and this document disagree, fix one of them in the
@@ -303,13 +303,13 @@ Terminal pane (`Sources/WebmuxTerminal/Terminal`):
 11. Link detection runs Swift-side over the row text under the pointer
     (`TerminalLinks`), not through xterm.js's link provider or the core's
     regex; a click opens, ⇧-click copies (T-24), also under mouse reporting.
-12. URL hover underline needs ⌘ held until the fork grows a
-    `ghostty_config_webmux_links` helper (the core's link config is
-    ⌘-bound); non-http OSC 8 targets follow GTK deviation 26 (chooser,
-    Copy only).
-13. The Electron key fixups (K-19…, cursor/keypad) apply even when the
-    program has the kitty keyboard protocol on; the kitty query is not
-    answered differently.
+12. Non-http OSC 8 targets follow GTK deviation 26 (inert on a plain
+    click; ⌘-click offers the chooser, Copy only). URLs underline on hover
+    and open on a plain click as in the Electron client (the fork's
+    `ghostty_config_webmux_links`, fork pass 2026-11-07).
+13. (Lifted 2026-11-07.) The Electron key fixups (K-19…) apply only while
+    the program has not enabled the kitty keyboard protocol, as in the GTK
+    client (`ghostty_surface_webmux_kitty_keyboard`).
 14. ⌘ keys never reach the pty: the workspace consumes the chords, the
     terminal consumes ⌘C/⌘V, and the core does not encode ⌘ on macOS.
 15. 3 lines per wheel notch, ⌥ scrolls 5× (T-27), T-30's sticky bottom band.
@@ -358,19 +358,16 @@ Panels and app (`Sources/WebmuxPanels`, `Sources/webmux/App`):
 
 ## Open items
 
-Fork follow-ups (`gtk/ghostty`, branch `webmux-shell`):
-
-- `ghostty_config_load_string` (today `Ghostty.Config(text:)` writes a
-  private temp file and `ghostty_config_load_file`s it).
-- a `ghostty_config_webmux_links` helper: URL hover underline without ⌘
-  and a plain click on an OSC 8 hyperlink.
-- the OSC 8 URI at a cell (T-25) and the cursor / alt-screen state for
-  T-20's Alt+click cursor moves.
-- the kitty keyboard query (dev. 13).
+Fork follow-ups (`gtk/ghostty`, branch `webmux-shell`): **done
+2026-11-07** (`WEBMUX.md` › macOS: GhosttyKit): `ghostty_config_load_string`,
+`ghostty_config_webmux_links` (URL underline on hover, plain click),
+`ghostty_surface_webmux_osc8_at` (T-25), `ghostty_surface_webmux_alt_click`
+(T-20, the move computed in Zig from the core's cursor state) and
+`ghostty_surface_webmux_kitty_keyboard` (dev. 13 lifted). Each has a live
+test in `LiveTerminalTests`.
 
 PARITY items the areas reported partly done or not applicable: T-10
-(scrollbar pixels differ), T-20 (Alt+click; needs the fork), T-21 (n/a on
-macOS), T-25 (OSC 8 at a cell); L-23, L-24 (ring/fade are native, not the
+(scrollbar pixels differ), T-21 (n/a on macOS); L-23, L-24 (ring/fade are native, not the
 CSS values), L-27 (no strip scrollbar), L-29, L-35 (z-order only during
 overlaps); F-39, F-54…F-58, F-62 (download panel details, remote-image
 markdown); W-29 (Electron's window-level status pills); X-20 (back to the
@@ -407,4 +404,5 @@ Integration and release:
 | Phase 3 libraries landed earlier | ✅ 2026-11-07: WebmuxLayout 126 tests (Electron trace replays bit-for-bit), WebmuxHost 43 (8 live), WebmuxConnection 44 (18 engine via fake ssh) | `mac/Sources/Webmux{Layout,Host,Connection}` |
 | Integration (one app) | ✅ 2026-11-07: workspace per connection, terminal/files panes, menus + chords, theme/fade/clipboard sync, dev mode on the workspace, `dump` of the workspace, payload in the bundle; `swift test` 343 green (webmuxTests 1); dev smoke and fake-ssh connect flow over the control socket (mac/README.md › Smoke) | `mac/Sources/webmux/App/{AppDelegate,HostWorkspace,FilesPane,MainWindowController}.swift` |
 | First connect to a real Linux host | ✅ 2026-11-07 (user, ad-hoc build) | — |
-| Phase 4: fork pass (Open items › Fork follow-ups), then PARITY audit on a real host | ⏳ next | `gtk/ghostty/src/apprt/embedded.zig`, `include/ghostty.h`, `mac/Sources/WebmuxTerminal` |
+| Phase 4: fork pass (config from a string, link rule, OSC 8 at a cell, Alt+click, kitty query) | ✅ 2026-11-07 (fork `src/apprt/embedded/webmux.zig`, `src/config/webmux.zig`; 3 new live tests) | `gtk/ghostty/WEBMUX.md` › macOS: GhosttyKit, `mac/Sources/WebmuxTerminal/Terminal/TerminalPaneView.swift` |
+| Phase 4: PARITY audit on a real host | ⏳ next | `gtk/PARITY.md`, control socket (`mac/README.md` › Smoke) |
