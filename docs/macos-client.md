@@ -386,9 +386,9 @@ Integration and release:
 - the fake-ssh connect flow misreports a Linux payload that cannot run on
   the Mac as the Local Network hint (X-41's heuristic fires on the probe);
   a real host does not hit this path.
-- **first connect to a real Linux host not yet done**: the connect flow
-  was exercised against the fake ssh only (profile, Save & Connect,
-  probe, push, server start, failure shown in the Connections window).
+- first connect to a real Linux host: **done 2026-11-07** by the user with
+  the ad-hoc build (profile, deploy, tunnel, terminals work). No PARITY
+  audit against a real host yet.
 
 ## Status
 
@@ -406,4 +406,5 @@ Integration and release:
 | Phase 3 areas | ✅ 2026-11-07 (built in parallel, one library target each): WebmuxWorkspace 23 tests (live against a dev host), WebmuxTerminal 43 (live), WebmuxFiles 38 (1 snapshot test skipped without `WEBMUX_FILES_SNAPSHOT_DIR`), WebmuxPanels 25 | `mac/Sources/Webmux{Workspace,Terminal,Files,Panels}` |
 | Phase 3 libraries landed earlier | ✅ 2026-11-07: WebmuxLayout 126 tests (Electron trace replays bit-for-bit), WebmuxHost 43 (8 live), WebmuxConnection 44 (18 engine via fake ssh) | `mac/Sources/Webmux{Layout,Host,Connection}` |
 | Integration (one app) | ✅ 2026-11-07: workspace per connection, terminal/files panes, menus + chords, theme/fade/clipboard sync, dev mode on the workspace, `dump` of the workspace, payload in the bundle; `swift test` 343 green (webmuxTests 1); dev smoke and fake-ssh connect flow over the control socket (mac/README.md › Smoke) | `mac/Sources/webmux/App/{AppDelegate,HostWorkspace,FilesPane,MainWindowController}.swift` |
-| Phase 4 audit | ⏳ first connect to a real Linux host and the PARITY pass not yet done (Open items) | — |
+| First connect to a real Linux host | ✅ 2026-11-07 (user, ad-hoc build) | — |
+| Phase 4: fork pass (Open items › Fork follow-ups), then PARITY audit on a real host | ⏳ next | `gtk/ghostty/src/apprt/embedded.zig`, `include/ghostty.h`, `mac/Sources/WebmuxTerminal` |
