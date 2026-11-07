@@ -496,6 +496,30 @@ shell. A local host for tests needs no ssh:
       sit on device pixels (whole CSS pixels in app.js).
     The unfocused fade (L-24) gives the same pixels as before, by a colour
     matrix on the terminal's texture instead of two quads over it.
+70. Status messages are libadwaita toasts (`AdwToast` in an
+    `AdwToastOverlay`), not a copy of the Electron status line: bottom
+    centre, libadwaita's colours and shape, a close button, and the hide
+    timer pauses while the pointer is over the toast. One message at a
+    time, 3 s, a new one replaces the old; what is left of a held message
+    is rounded up to whole seconds (the toast's timeout). Overrides the
+    look and place in M-01.
+71. The file browser's delete confirmation is a native `AdwAlertDialog`
+    over the window, not a box drawn over the pane. It is window-modal:
+    the rest of the layout is not usable under it, and it stays up
+    whatever has the focus (it goes away if its pane is hidden). Delete is
+    the destructive default response with the initial focus; Escape and
+    Cancel cancel; a click outside does not (as 68). Overrides F-52 and
+    M-05; K-18 holds because every modal of the shell is now an
+    `AdwDialog`, which takes the focus.
+72. The connection log is a native `AdwWindow`: a header bar with a Copy
+    visible button and a menu (Copy all, Reveal file, Clear), a toolbar
+    row with the filters that still wraps in a narrow window, the lines in
+    the system monospace font at its size, an `AdwStatusPage` when there is
+    nothing to show, and a status bar. The line colours are libadwaita's
+    for the current scheme and accent colour (dim text; accent for
+    `[conn]`; success for `page`; warning and error), read back from the
+    style, not the Electron palette. Overrides the look in G-20, G-22
+    and G-23.
 
 (Add to this list; do not silently differ.)
 
@@ -577,9 +601,9 @@ The lead's rulings, which are part of the spec:
   Ghostty's encoder is used unchanged.
 - Chords are matched by physical key position (as the Electron client
   matches `event.code`), so they work on every keyboard layout (K-16).
-- App shortcuts work while an in-window dialog is open; pane chords do not
-  run while any modal is up, the file browser's in-pane confirmation
-  included (K-18, deviation 31 must be true as written).
+- App shortcuts work while a dialog is open; pane chords do not run while
+  any modal is up (K-18, deviation 31 must be true as written). Every
+  modal of the shell is an `AdwDialog`, which takes the focus.
 - Padding is 4 px and scrollback keeps at least 5000 lines (T-09, T-03).
 - Settings may be opened from the connection page (the header button is
   enabled there too); the Electron client only allows it on a host page

@@ -100,9 +100,12 @@ re-check, 12 judged by reading only, 2 n/a.
   your icon theme, that opening it over the terminal at Ctrl+Shift+O suits
   you, and that the dialog opening by itself at startup and after the last
   disconnect does not get in the way.
-- [ ] **The log window still uses the Electron look** (1,000 lines plus
-  its palette), the largest remaining candidate. The link chooser is now
-  an `AdwAlertDialog` (deviation 68).
+- [ ] **The last Electron-look pieces went native (2026-11-06):** the
+  log window is an `AdwWindow` in libadwaita's colours (deviation 72),
+  status messages are `AdwToast`s (70) and the file browser's delete
+  confirmation is an `AdwAlertDialog`, which is window-modal (71). Yours
+  to confirm on a real desktop, the modal delete confirmation in
+  particular.
 - [ ] **Review the deliberate deviations** in `docs/native-client.md`
   (15 so far), in particular: unix-socket tunnel end instead of a TCP
   port; a second live connection to the same host+instance is refused;
