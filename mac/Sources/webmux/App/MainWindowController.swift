@@ -31,9 +31,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let landing = NSView()
     private let landingLabel = NSTextField(labelWithString: "webmux")
     private let landingHint = NSTextField(labelWithString: "")
-    private let hostSwitcher = NSSegmentedControl()
-    private var hosts: [(name: String, kind: HostStatusKind, active: Bool)] = []
-    /// A segment clicked (user navigation).
+    /// The host switcher: a pill per host with its status colour and minimap.
+    private let hostPills = HostPillsView()
+    private var hosts: [HostEntry] = []
+    /// A pill clicked (user navigation).
     var onHostSelected: ((String) -> Void)?
 
     init(ghostty: Ghostty.App) {
@@ -68,6 +69,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         container.wantsLayer = true
         window.contentView = container
         buildLanding()
+        hostPills.onSelectHost = { [weak self] name in self?.onHostSelected?(name) }
+        hostPills.onSelectPane = { [weak self] name, id in
+            guard let self else { return }
+            if self.frontView?.name != name { self.onHostSelected?(name) }
+            guard self.frontView?.name == name else { return }
+            self.frontWorkspace?.setFocus(id, keyboard: true)
+        }
         setHosts([])
         showLanding()
     }
@@ -110,7 +118,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             container.addSubview(landing)
         }
         setTitle(baseTitle, subtitle: "")
-        selectSegment(nil)
+        markActive(nil)
     }
 
     /// Bring a host's content to the front (W-02: exactly one content view).
@@ -131,7 +139,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         } else {
             window?.makeFirstResponder(view.content ?? view)
         }
-        selectSegment(view.name)
+        markActive(view.name)
     }
 
     /// The workspace of the host in front, if it has one.
@@ -144,25 +152,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window?.subtitle = subtitle
     }
 
-    /// Rebuild the host switcher: one segment per live connection, with its
-    /// status dot; hidden when there is none.
-    func setHosts(_ list: [(name: String, kind: HostStatusKind, active: Bool)]) {
+    /// Rebuild the host switcher: one pill per live connection; out of the
+    /// toolbar when there is none.
+    func setHosts(_ list: [HostEntry]) {
         hosts = list
-        hostSwitcher.segmentCount = list.count
+        hostPills.set(list)
         setSwitcherShown(!list.isEmpty)
-        for (i, h) in list.enumerated() {
-            hostSwitcher.setLabel(h.name, forSegment: i)
-            hostSwitcher.setImage(h.kind.dotImage(), forSegment: i)
-            hostSwitcher.setImageScaling(.scaleNone, forSegment: i)
-            hostSwitcher.setWidth(0, forSegment: i)
-            hostSwitcher.setToolTip("\(h.name) — \(h.kind.stateText())" + (i < 9 ? " (⌘\(i + 1))" : ""), forSegment: i)
-        }
-        hostSwitcher.invalidateIntrinsicContentSize()
-        selectSegment(list.first { $0.active }?.name)
+    }
+
+    /// The front host changed here before the hub's next refresh says so.
+    private func markActive(_ name: String?) {
+        guard hosts.contains(where: { $0.active != ($0.name == name) }) else { return }
+        setHosts(hosts.map { var e = $0; e.active = e.name == name; return e })
     }
 
     /// The switcher is in the toolbar only while there are connections (an
-    /// empty or hidden control measures as zero, which the toolbar rejects).
+    /// empty view measures as zero, which the toolbar rejects).
     private func setSwitcherShown(_ shown: Bool) {
         guard let toolbar = window?.toolbar else { return }
         let i = toolbar.items.firstIndex { $0.itemIdentifier == Self.hostItem }
@@ -174,23 +179,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    /// Select the named host's segment; none selected for nil (landing).
-    private func selectSegment(_ name: String?) {
-        if let name, let i = hosts.firstIndex(where: { $0.name == name }), i < hostSwitcher.segmentCount {
-            hostSwitcher.selectedSegment = i
-        } else {
-            hostSwitcher.selectedSegment = -1
-        }
-    }
-
-    @objc private func hostSwitcherChanged(_ sender: Any?) {
-        let i = hostSwitcher.selectedSegment
-        guard i >= 0, i < hosts.count else { return }
-        onHostSelected?(hosts[i].name)
+    /// A host's pill and minimap as data (control socket): the pill's frame,
+    /// the map's cells and viewport outline in its own points; nil for an
+    /// unknown host.
+    func minimapInfo(_ name: String) -> [String: Any]? {
+        guard let pill = hostPills.pill(named: name) else { return nil }
+        let m = pill.minimap.map
+        func r(_ r: CGRect) -> [Double] { [r.minX, r.minY, r.width, r.height].map { (Double($0) * 10).rounded() / 10 } }
+        return [
+            "pill": r(pill.frame),
+            "mapShown": !pill.minimap.isHidden,
+            "size": [Double(m.size.width), Double(m.size.height)],
+            "cells": m.cells.map { ["id": $0.id, "rect": r($0.rect), "focused": $0.focused] as [String: Any] },
+            "viewport": m.viewport.map(r) as Any? ?? NSNull(),
+        ]
     }
 
     /// The switcher's entries (control socket).
-    var hostEntries: [(name: String, kind: HostStatusKind, active: Bool)] { hosts }
+    var hostEntries: [HostEntry] { hosts }
 
     /// A line of text in the content area (dev mode's status before attach).
     func showStatus(_ text: String) {
@@ -221,12 +227,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let item = NSToolbarItem(itemIdentifier: id)
             item.label = "Hosts"
             item.paletteLabel = "Hosts"
-            hostSwitcher.segmentStyle = .automatic
-            hostSwitcher.trackingMode = .selectOne
-            hostSwitcher.target = self
-            hostSwitcher.action = #selector(hostSwitcherChanged(_:))
-            hostSwitcher.setContentHuggingPriority(.required, for: .horizontal)
-            item.view = hostSwitcher
+            item.view = hostPills
+            item.autovalidates = false
             item.visibilityPriority = .high
             return item
         case Self.connectItem:

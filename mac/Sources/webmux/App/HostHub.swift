@@ -53,9 +53,10 @@ final class HostHub {
     var activeEntry: Entry? { entries.first { $0.name == active } }
     func entry(named name: String) -> Entry? { entries.first { $0.name == name } }
 
-    /// Every host for the toolbar popup, in order.
-    var hostList: [(name: String, kind: HostStatusKind, active: Bool)] {
-        entries.map { ($0.name, $0.kind, $0.name == active) }
+    /// Every host for the toolbar switcher, in order (the dev host first).
+    var hostList: [HostEntry] {
+        (app.devHostEntry.map { [$0] } ?? [])
+            + entries.map { HostEntry(name: $0.name, kind: $0.kind, active: $0.name == active, workspace: $0.view.workspace?.controller.view) }
     }
 
     // MARK: Engine events (already on the main queue)

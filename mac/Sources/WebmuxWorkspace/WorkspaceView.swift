@@ -109,6 +109,8 @@ public final class WorkspaceView: NSView {
     public private(set) var geometry: WorkspaceGeometry?
     /// The scroll offset (points, strip space).
     public private(set) var scroll: Double = 0
+    /// The strip moved or the focus changed (the pane minimap redraws).
+    public var onViewportChange: (() -> Void)?
 
     // MARK: Items
 
@@ -731,6 +733,7 @@ public final class WorkspaceView: NSView {
         let sx = (scroll * scale).rounded() / scale
         let f = NSRect(x: -sx, y: 0, width: extent, height: bounds.height)
         if strip.frame != f { strip.frame = f }
+        onViewportChange?()
     }
 
     public var maxScroll: Double {
@@ -908,6 +911,7 @@ public final class WorkspaceView: NSView {
             // L-35: the focused pane above the others while boxes overlap.
             it.frame.layer?.zPosition = focused ? 3 : 2
         }
+        onViewportChange?()
     }
 
     // MARK: Cell width (L-16)

@@ -118,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             devHostView = view
             hostDidConnect(view)
             window.showHost(view)
+            refreshHosts()
             window.setTitle("webmux (dev)", subtitle: "")
             StatusHUD.setFront("dev", in: window.window)
         } else {
@@ -281,6 +282,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// local socket and `view.slug` the per-host key. A workspace is built on
     /// it, put in the view and attached (S-01); a reconnect with a new socket
     /// replaces the old one.
+    /// Dev mode's host in the switcher (always connected, never in the hub).
+    var devHostEntry: HostEntry? {
+        guard let v = devHostView else { return nil }
+        let kind: HostStatusKind = v.isOffline ? .degraded : .connected
+        return HostEntry(name: v.name, kind: kind, active: mainWindow?.frontView === v, workspace: v.workspace?.controller.view)
+    }
+
+    /// Push the host list to the switcher (the hub's, or dev mode's alone).
+    func refreshHosts() {
+        if let hub { hub.refresh() } else if let e = devHostEntry { mainWindow?.setHosts([e]) }
+    }
+
     func hostDidConnect(_ view: HostContentView) {
         Self.logger.info("host connected: \(view.name, privacy: .public) socket \(view.socketPath ?? "-", privacy: .public)")
         guard let ghostty, let socket = view.socketPath else { return }
@@ -295,10 +308,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             connection: WorkspaceConnection(socketPath: socket, name: view.name, slug: slug),
             ghostty: ghostty, layoutURL: layoutURL, settings: engine?.settings, engine: engine,
             window: { [weak self] in self?.mainWindow?.window })
-        ws.onOffline = { [weak self] name, offline in self?.hub?.setOffline(name, offline) }
+        ws.onOffline = { [weak self, weak view] name, offline in
+            self?.hub?.setOffline(name, offline)
+            if let self, view != nil, view === self.devHostView { self.refreshHosts() }
+        }
         view.workspace = ws
         workspaces.append(ws)
         ws.start()
+        refreshHosts()
         if mainWindow?.frontView === view {
             ws.controller.setFront(true)
             ws.controller.focusKeyboard()
@@ -315,6 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             view.workspace = nil
         }
         view.setContent(nil)
+        refreshHosts()
     }
 
     // MARK: Menu actions

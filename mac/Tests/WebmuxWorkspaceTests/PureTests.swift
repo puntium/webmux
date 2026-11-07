@@ -188,3 +188,51 @@ final class CommandTableTests: XCTestCase {
         XCTAssertEqual(item.representedObject as? String, "close-pane")
     }
 }
+
+final class MinimapTests: XCTestCase {
+    private func geometry(_ l: Layout, width: Double) -> WorkspaceGeometry {
+        WorkspaceGeometry(layout: l, width: width, height: 900, cellPx: 8, settings: WidthSettings())
+    }
+
+    func testEmptyLayoutIsTheEmptyMap() {
+        XCTAssertEqual(MinimapLayout(layout: Layout(), geometry: nil, scroll: 0), .empty())
+    }
+
+    func testCellsFollowColumnsAndStacksAndMarkFocus() throws {
+        var l = Layout()
+        try l.newTerminal("a")
+        try l.newTerminalBelow("b")
+        try l.newTerminal("c")
+        let m = MinimapLayout(layout: l, geometry: geometry(l, width: 3000), scroll: 0)
+        XCTAssertEqual(m.cells.map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(m.cells.filter(\.focused).map(\.id), ["c"])
+        let a = m.cells[0].rect, b = m.cells[1].rect, c = m.cells[2].rect
+        XCTAssertEqual(a.minX, b.minX)
+        XCTAssertLessThan(a.maxY, b.minY)
+        XCTAssertGreaterThan(c.minX, a.maxX)
+        XCTAssertNil(m.viewport, "everything fits: no viewport outline")
+        XCTAssertLessThanOrEqual(m.size.width, MinimapLayout.defaultMaxWidth + 1)
+        XCTAssertEqual(m.pane(at: CGPoint(x: c.midX, y: c.midY)), "c")
+    }
+
+    func testOverflowShowsTheViewportAndItMovesWithTheScroll() throws {
+        var l = Layout()
+        for id in ["a", "b", "c", "d", "e"] { try l.newTerminal(id) }
+        let g = geometry(l, width: 1000)
+        XCTAssertTrue(g.strip.overflows)
+        let start = MinimapLayout(layout: l, geometry: g, scroll: 0)
+        let end = MinimapLayout(layout: l, geometry: g, scroll: g.strip.maxScroll)
+        let v0 = try XCTUnwrap(start.viewport), v1 = try XCTUnwrap(end.viewport)
+        XCTAssertLessThan(v0.minX, v1.minX)
+        XCTAssertLessThan(v0.maxX, start.cells.last!.rect.maxX, "the last column is off screen at scroll 0")
+        XCTAssertGreaterThanOrEqual(v1.maxX, end.cells.last!.rect.maxX)
+    }
+
+    func testManyColumnsFitTheMaxWidth() throws {
+        var l = Layout()
+        for i in 0..<40 { try l.newTerminal("t\(i)") }
+        let m = MinimapLayout(layout: l, geometry: geometry(l, width: 1400), scroll: 0)
+        XCTAssertEqual(m.cells.count, 40)
+        XCTAssertLessThanOrEqual(m.size.width, MinimapLayout.defaultMaxWidth + 1)
+    }
+}

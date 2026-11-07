@@ -170,15 +170,21 @@ are **not** needed: the shell runs on the remote host.
 ## Idiomatic macOS: the shape of the app
 
 One main window per app (W-01…), the Electron client's "hosts" become
-**one workspace per connection**, switched with one click from a
-segmented control in the toolbar (one segment per live connection, with
-its status dot) and ⌘1…⌘9 / ⌘⇧[ / ⌘⇧] (W-45). The window has a unified
+**one workspace per connection**, switched with one click from the host
+pills in the toolbar and ⌘1…⌘9 / ⌘⇧[ / ⌘⇧] (W-45). One pill per live
+connection, coloured by status (green connected, yellow connecting /
+degraded, red retrying / failed), with the name in small type above a
+minimap of that host's panes (`WorkspaceMinimapView`: columns and stacks
+roughly to proportion, the focused pane highlighted, an outline of the
+on-screen part when the strip scrolls), so every host's layout shows at
+once; clicking a pane in a minimap brings its host to the front with
+that pane focused. The minimap's `attention` set (drawn orange) is the
+hook for a future "pane wants attention" signal; nothing sets it yet. The window has a unified
 title bar + `NSToolbar`: the host switcher and a "+" that opens the
 Connections window (to start another connection; the Electron and GTK
 clients have no such entry) centred, New Terminal, New File Browser and
 Settings on the right. The Connection Log is in the menus only (⌃⌘L).
-Header-strip pills and their colours (W-10…) are not copied; the status
-is the segment's dot and the window subtitle.
+The status is the pill's colour and the window subtitle.
 
 | Electron thing | Mac equivalent |
 | --- | --- |

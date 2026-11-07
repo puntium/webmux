@@ -237,7 +237,10 @@ struct ControlCommands {
                     panes = flat
                 }
                 w["panes"] = panes
-                w["hosts"] = controller.hostEntries.map { ["name": $0.name, "state": $0.kind.rawValue, "active": $0.active] }
+                w["hosts"] = controller.hostEntries.map { e -> [String: Any] in
+                    ["name": e.name, "state": e.kind.rawValue, "active": e.active,
+                     "minimap": controller.minimapInfo(e.name) as Any? ?? NSNull()]
+                }
                 w["front"] = controller.frontView?.name as Any? ?? NSNull()
                 w["landing"] = controller.isLandingShown
             }
