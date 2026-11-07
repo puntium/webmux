@@ -67,7 +67,7 @@ public struct ProfileFormValues: Equatable, Sendable {
     }
 
     /// The row's title: where the password lives (deviation 3).
-    public static let passwordLabel = "Password (stored in the Keychain)"
+    public static let passwordLabel = "Password"
 }
 
 public struct FormError: Error, Equatable, CustomStringConvertible, Sendable {

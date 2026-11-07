@@ -123,7 +123,7 @@ public struct StatusDetail: Equatable, Sendable {
                 explanation = "Connection interrupted — retrying… (sessions keep running on the server)"
             }
         case .failed:
-            explanation = "Not retrying automatically — hit Connect to try again. The connection log (Connection Log button) has the full sequence."
+            explanation = "Not retrying automatically — hit Connect to try again. The connection log (⌃⌘L, or the log button under the list) has the full sequence."
         }
         var fraction: Double?
         if status.step == .pushing, status.pushTotal > 0 {

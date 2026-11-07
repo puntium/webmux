@@ -654,7 +654,14 @@ struct ControlCommands {
 
     private func screenshot(_ obj: [String: Any]) -> [String: Any] {
         guard let path = obj["path"] as? String else { return ["ok": false, "error": "missing path"] }
-        guard let window = app.mainWindow?.window else { return ["ok": false, "error": "no window"] }
+        // `kind` (as `window`) picks another visible window; the main one by default.
+        let window: NSWindow?
+        if let k = obj["kind"] as? String, k != "main" {
+            window = NSApp.windows.first { $0.isVisible && kind(of: $0) == k }
+        } else {
+            window = app.mainWindow?.window
+        }
+        guard let window else { return ["ok": false, "error": "no window"] }
         // CGWindowListCreateImage is deprecated for ScreenCaptureKit but is the one
         // call that needs no async permission dance; without Screen Recording
         // permission it returns an image without our content (or nil).

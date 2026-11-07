@@ -176,7 +176,7 @@ public enum Deployer {
         let probeOut: String
         switch runSsh(r, shWrap(probeScript), stdinFile: nil) {
         case .ok(let o): probeOut = o
-        case .failed(let f): return .failed(f.msg)
+        case .failed(let msg, _): return .failed(msg)
         case .cancelled: return .cancelled
         }
         let probe = parseProbe(probeOut)
@@ -199,7 +199,7 @@ public enum Deployer {
             let script = "rm -rf \(base)/.tmp-\(hash) && mkdir -p \(base)/.tmp-\(hash) && tar xzf - -C \(base)/.tmp-\(hash) && rm -rf \(base)/\(hash) && mv \(base)/.tmp-\(hash) \(base)/\(hash)"
             switch runSsh(r, shWrap(script), stdinFile: tarball) {
             case .ok: break
-            case .failed(let f): return .failed(f.msg)
+            case .failed(let msg, _): return .failed(msg)
             case .cancelled: return .cancelled
             }
             if !r.isLive() { return .cancelled }
@@ -241,9 +241,9 @@ public enum Deployer {
         switch runSsh(r, shWrap(cmd), stdinFile: nil) {
         case .ok(let o): out = o
         case .cancelled: return .cancelled
-        case .failed(let f):
-            guard let so = f.stdout else { return .failed("server start failed: \(f.msg)") }
-            exitMsg = f.msg
+        case .failed(let msg, let stdout):
+            guard let so = stdout else { return .failed("server start failed: \(msg)") }
+            exitMsg = msg
             out = so
         }
         guard let resultV = lastJsonLine(out) else {

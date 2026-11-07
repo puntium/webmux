@@ -1,7 +1,9 @@
 // The main window (W-01, W-06, W-07; docs/macos-client.md "Idiomatic macOS"):
-// a unified title bar with an `NSToolbar` — the host popup (one entry per live
-// connection with its status dot, "webmux" when none), New Terminal, New File
-// Browser, Connection Log, Settings — over a content area that shows one
+// a unified title bar with an `NSToolbar` — the host switcher (a segmented
+// control, one segment per live connection with its status dot, so switching
+// is one click), a "+" that opens the Connections window to start another
+// connection, New Terminal, New File Browser, Settings — over a content area
+// that shows one
 // connection's `HostContentView` at a time, or a small landing view when no
 // host is in front. The window title is the connection's name, the subtitle
 // its state.
@@ -29,9 +31,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let landing = NSView()
     private let landingLabel = NSTextField(labelWithString: "webmux")
     private let landingHint = NSTextField(labelWithString: "")
-    private let hostPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 200, height: 24), pullsDown: false)
+    private let hostSwitcher = NSSegmentedControl()
     private var hosts: [(name: String, kind: HostStatusKind, active: Bool)] = []
-    /// The popup's choice (user navigation).
+    /// A segment clicked (user navigation).
     var onHostSelected: ((String) -> Void)?
 
     init(ghostty: Ghostty.App) {
@@ -58,6 +60,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         toolbar.delegate = self
         toolbar.allowsUserCustomization = false
         toolbar.displayMode = .iconOnly
+        // The host switcher and its "+" sit centred, apart from the pane
+        // actions on the right (the title takes the flexible space).
+        toolbar.centeredItemIdentifiers = [Self.hostItem, Self.connectItem]
         window.toolbar = toolbar
 
         container.wantsLayer = true
@@ -105,7 +110,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             container.addSubview(landing)
         }
         setTitle(baseTitle, subtitle: "")
-        selectPopupEntry(nil)
+        selectSegment(nil)
     }
 
     /// Bring a host's content to the front (W-02: exactly one content view).
@@ -126,7 +131,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         } else {
             window?.makeFirstResponder(view.content ?? view)
         }
-        selectPopupEntry(view.name)
+        selectSegment(view.name)
     }
 
     /// The workspace of the host in front, if it has one.
@@ -139,47 +144,52 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window?.subtitle = subtitle
     }
 
-    /// Rebuild the toolbar popup: one entry per live connection, with its
-    /// status dot; "webmux" when there is none.
+    /// Rebuild the host switcher: one segment per live connection, with its
+    /// status dot; hidden when there is none.
     func setHosts(_ list: [(name: String, kind: HostStatusKind, active: Bool)]) {
         hosts = list
-        hostPopup.removeAllItems()
-        if list.isEmpty {
-            hostPopup.addItem(withTitle: baseTitle)
-            hostPopup.lastItem?.image = HostStatusKind.none.dotImage()
-            hostPopup.isEnabled = false
-            return
-        }
-        hostPopup.isEnabled = true
+        hostSwitcher.segmentCount = list.count
+        setSwitcherShown(!list.isEmpty)
         for (i, h) in list.enumerated() {
-            let item = NSMenuItem(title: h.name, action: nil, keyEquivalent: "")
-            item.image = h.kind.dotImage()
-            item.toolTip = "\(h.name) — \(h.kind.stateText())" + (i < 9 ? " (⌘\(i + 1))" : "")
-            item.representedObject = h.name
-            hostPopup.menu?.addItem(item)
+            hostSwitcher.setLabel(h.name, forSegment: i)
+            hostSwitcher.setImage(h.kind.dotImage(), forSegment: i)
+            hostSwitcher.setImageScaling(.scaleNone, forSegment: i)
+            hostSwitcher.setWidth(0, forSegment: i)
+            hostSwitcher.setToolTip("\(h.name) — \(h.kind.stateText())" + (i < 9 ? " (⌘\(i + 1))" : ""), forSegment: i)
         }
-        selectPopupEntry(list.first { $0.active }?.name)
+        hostSwitcher.invalidateIntrinsicContentSize()
+        selectSegment(list.first { $0.active }?.name)
     }
 
-    private func selectPopupEntry(_ name: String?) {
-        guard let name, let i = hostPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == name }) else {
-            if !hosts.isEmpty {
-                // No host in front: show the app name as the popup's title
-                // without selecting a host.
-                hostPopup.selectItem(at: -1)
-                hostPopup.setTitle(baseTitle)
-            }
-            return
+    /// The switcher is in the toolbar only while there are connections (an
+    /// empty or hidden control measures as zero, which the toolbar rejects).
+    private func setSwitcherShown(_ shown: Bool) {
+        guard let toolbar = window?.toolbar else { return }
+        let i = toolbar.items.firstIndex { $0.itemIdentifier == Self.hostItem }
+        if shown, i == nil {
+            let at = toolbar.items.firstIndex { $0.itemIdentifier == Self.connectItem } ?? 0
+            toolbar.insertItem(withItemIdentifier: Self.hostItem, at: at)
+        } else if !shown, let i {
+            toolbar.removeItem(at: i)
         }
-        hostPopup.selectItem(at: i)
     }
 
-    @objc private func hostPopupChanged(_ sender: Any?) {
-        guard let name = hostPopup.selectedItem?.representedObject as? String else { return }
-        onHostSelected?(name)
+    /// Select the named host's segment; none selected for nil (landing).
+    private func selectSegment(_ name: String?) {
+        if let name, let i = hosts.firstIndex(where: { $0.name == name }), i < hostSwitcher.segmentCount {
+            hostSwitcher.selectedSegment = i
+        } else {
+            hostSwitcher.selectedSegment = -1
+        }
     }
 
-    /// The popup's entries (control socket).
+    @objc private func hostSwitcherChanged(_ sender: Any?) {
+        let i = hostSwitcher.selectedSegment
+        guard i >= 0, i < hosts.count else { return }
+        onHostSelected?(hosts[i].name)
+    }
+
+    /// The switcher's entries (control socket).
     var hostEntries: [(name: String, kind: HostStatusKind, active: Bool)] { hosts }
 
     /// A line of text in the content area (dev mode's status before attach).
@@ -192,28 +202,36 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private static let hostItem = NSToolbarItem.Identifier("webmux.host")
     private static let newTerminalItem = NSToolbarItem.Identifier("webmux.newTerminal")
     private static let newFilesItem = NSToolbarItem.Identifier("webmux.newFiles")
-    private static let logItem = NSToolbarItem.Identifier("webmux.log")
+    private static let connectItem = NSToolbarItem.Identifier("webmux.connect")
     private static let settingsItem = NSToolbarItem.Identifier("webmux.settings")
 
+    /// The host switcher is not a default item: `setHosts` inserts it before
+    /// the "+" while there are connections.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.hostItem, .flexibleSpace, Self.newTerminalItem, Self.newFilesItem, Self.logItem, Self.settingsItem]
+        [.flexibleSpace, Self.connectItem, .flexibleSpace, Self.newTerminalItem, Self.newFilesItem, Self.settingsItem]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
+        toolbarDefaultItemIdentifiers(toolbar) + [Self.hostItem]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch id {
         case Self.hostItem:
             let item = NSToolbarItem(itemIdentifier: id)
-            item.label = "Host"
-            item.paletteLabel = "Host"
-            hostPopup.bezelStyle = .texturedRounded
-            hostPopup.target = self
-            hostPopup.action = #selector(hostPopupChanged(_:))
-            hostPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            item.view = hostPopup
+            item.label = "Hosts"
+            item.paletteLabel = "Hosts"
+            hostSwitcher.segmentStyle = .automatic
+            hostSwitcher.trackingMode = .selectOne
+            hostSwitcher.target = self
+            hostSwitcher.action = #selector(hostSwitcherChanged(_:))
+            hostSwitcher.setContentHuggingPriority(.required, for: .horizontal)
+            item.view = hostSwitcher
+            item.visibilityPriority = .high
+            return item
+        case Self.connectItem:
+            let item = button(id, "Connect", "New connection… (Connections window)", "plus",
+                              #selector(AppDelegate.showConnections(_:)))
             item.visibilityPriority = .high
             return item
         case Self.newTerminalItem:
@@ -222,9 +240,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case Self.newFilesItem:
             return button(id, "New File Browser", "New file browser in a new column (⌘⇧↩)", "folder.badge.plus",
                           #selector(PaneCommandTarget.newFileBrowser(_:)))
-        case Self.logItem:
-            return button(id, "Connection Log", "Connection log (⌃⌘L)", "list.bullet.rectangle",
-                          #selector(AppDelegate.showLog(_:)))
         case Self.settingsItem:
             return button(id, "Settings", "Settings (⌘,)", "gearshape", #selector(AppDelegate.showSettings(_:)))
         default:

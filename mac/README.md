@@ -193,7 +193,7 @@ printf '%s\n' '{"cmd":"text","text":"echo wm-$((6*7))\n"}' '{"cmd":"wait","conta
 | `text` | `text` | `{ok, typed}`; key by key through the current keyboard layout into the focused terminal (`\n` Return, `\t` Tab, `\u{7f}` Backspace, `\u{1b}` Escape, 0x01–0x1a ctrl+letter); characters the layout cannot produce go in as committed text (the IME path), in order |
 | `resize` | `w`, `h` (content size, points) | `{ok, cols, rows, frame}` (the focused terminal's grid) |
 | `wait` | `ms` (default 100), or `contains` + `timeout_ms` (default 5000) | `{ok}` / `{ok, found}`; `contains` polls the focused terminal's visible text every 50 ms |
-| `screenshot` | `path` | `{ok, path, width, height, note}`; `CGWindowListCreateImage` of our window — **blank without Screen Recording permission** (the Metal content is checked through `dump`, not pixels) |
+| `screenshot` | `path`, `kind?` (as `window`; default `main`) | `{ok, path, width, height, note}`; `CGWindowListCreateImage` of that window — **blank without Screen Recording permission** (the Metal content is checked through `dump`, not pixels) |
 | `quit` | — | `{ok}`, then the app terminates (engine shutdown bounded at 3 s) |
 | `help` | — | the command list |
 

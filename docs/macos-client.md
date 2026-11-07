@@ -170,15 +170,19 @@ are **not** needed: the shell runs on the remote host.
 ## Idiomatic macOS: the shape of the app
 
 One main window per app (W-01…), the Electron client's "hosts" become
-**one workspace per connection**, switched from a toolbar popup and
-⌘⇧[ / ⌘⇧] (W-45). The window has a unified title bar + `NSToolbar`
-(items: host popup with status dot, New Terminal, New File Browser,
-Connection Log, Settings). Header-strip pills and their colours (W-10…)
-are not copied; the status is the popup's dot and the window subtitle.
+**one workspace per connection**, switched with one click from a
+segmented control in the toolbar (one segment per live connection, with
+its status dot) and ⌘1…⌘9 / ⌘⇧[ / ⌘⇧] (W-45). The window has a unified
+title bar + `NSToolbar`: the host switcher and a "+" that opens the
+Connections window (to start another connection; the Electron and GTK
+clients have no such entry) centred, New Terminal, New File Browser and
+Settings on the right. The Connection Log is in the menus only (⌃⌘L).
+Header-strip pills and their colours (W-10…) are not copied; the status
+is the segment's dot and the window subtitle.
 
 | Electron thing | Mac equivalent |
 | --- | --- |
-| Connection page, profile form, ⋯ menu | **Connections** window (`NSWindow`, sidebar list + form; sheet for delete/restart confirmations) |
+| Connection page, profile form, ⋯ menu | **Connections** window (`NSWindow`: sidebar list with a +/− and log footer; form with the everyday fields — name, host, password, instance — and an Advanced box for port, identity, extra ssh options, download folder; sheet for delete/restart confirmations) |
 | Settings modal (color scheme, fade) | **Settings** window (⌘,) with a toolbar-style pane |
 | Log window | **Connection Log** window (`NSTableView`, Reveal in Finder) |
 | Status messages | transient HUD panel at the window's bottom, auto-dismissed |

@@ -1,8 +1,9 @@
 // The Connections window (⌘⇧O; PARITY W-20…W-32 as functions, X-03…X-10,
 // X-18, X-22, X-23, X-30; deviations 23, 67; reference: chrome/page.zig):
 // a sidebar of profiles with status dots and a form on the right; Connect /
-// Disconnect / Cancel / Show / Reconnect; Restart Sessions and Delete behind
-// `NSAlert` sheets; below the form the live status detail (deploy step and
+// Disconnect / Cancel / Show / Reconnect; Restart Sessions and Delete (the
+// list footer's −) behind `NSAlert` sheets; the everyday fields first, the
+// rest in an Advanced box; below the form the live status detail (deploy step and
 // push progress, the retry countdown ticking every second, the failure
 // message with ssh's stderr tail, the Local Network hint) and, at the top,
 // the config-problem banner.
@@ -19,7 +20,6 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
     public static let windowTitle = "Connections"
     public static let noticeMs = 8000
     public static let emptyText = "No profiles yet — create one to connect."
-    public static let hint = "A host needs nothing but ssh: connecting pushes the webmux server (one small static binary) to ~/.webmux/dist on the host and starts it — updates are pushed the same way, and sessions survive them. Connect to several hosts at once; each is a workspace in the main window (⌘1…9 or ⌘⇧[ / ⌘⇧] switch, ⌘⇧O opens this window). Key auth needs no prompt (use ssh-agent for passphrases); or save a password per profile — it is kept in your Keychain and fed to ssh through an askpass helper. ⌘⇧R reconnects the current host."
 
     private let engine: ConnectionEngine
     private let passwords: PasswordStore?
@@ -29,7 +29,7 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
     public var onConnectRequested: ((String) -> Void)?
     /// `Show`: bring this connected host to the front.
     public var onShowHost: ((String) -> Void)?
-    /// The Log button.
+    /// The Log button in the sidebar's bottom bar.
     public var onOpenLog: (() -> Void)?
 
     private var profiles: [Profile] = []
@@ -56,6 +56,8 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
     private let downloadField = NSTextField()
     private let passwordField = NSSecureTextField()
     private let clearPasswordBox = NSButton(checkboxWithTitle: "Clear saved password", target: nil, action: nil)
+    /// The grid row holding `clearPasswordBox`: hidden as a row so it leaves no gap.
+    private var clearPasswordRow: NSGridRow?
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private let noticeLabel = NSTextField(wrappingLabelWithString: "")
     private let formTitle = NSTextField(labelWithString: "")
@@ -64,7 +66,8 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
     private let showButton = NSButton(title: "Show", target: nil, action: nil)
     private let reconnectButton = NSButton(title: "Reconnect", target: nil, action: nil)
     private let restartButton = NSButton(title: "Restart Sessions…", target: nil, action: nil)
-    private let deleteButton = NSButton(title: "Delete…", target: nil, action: nil)
+    /// The sidebar's bottom bar: + (new profile) and − (delete the selected one).
+    private let addRemove = NSSegmentedControl()
     private let detailBox = NSStackView()
     private let detailDot = NSImageView()
     private let detailTitle = NSTextField(labelWithString: "")
@@ -251,17 +254,27 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         emptyLabel.lineBreakMode = .byWordWrapping
         emptyLabel.maximumNumberOfLines = 3
 
-        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Profile") ?? NSImage(), target: self, action: #selector(newProfile(_:)))
-        add.bezelStyle = .smallSquare
-        add.isBordered = false
-        add.toolTip = "New Profile"
-        let logButton = NSButton(title: "Log", target: self, action: #selector(openLog(_:)))
-        logButton.bezelStyle = .inline
-        logButton.controlSize = .small
+        // The standard list footer: [+|−] on the left, the log on the right.
+        addRemove.segmentStyle = .smallSquare
+        addRemove.trackingMode = .momentary
+        addRemove.segmentCount = 2
+        addRemove.setImage(NSImage(systemSymbolName: "plus", accessibilityDescription: "New Profile"), forSegment: 0)
+        addRemove.setImage(NSImage(systemSymbolName: "minus", accessibilityDescription: "Delete Profile"), forSegment: 1)
+        addRemove.setToolTip("New profile", forSegment: 0)
+        addRemove.setToolTip("Delete the selected profile…", forSegment: 1)
+        for i in 0..<2 { addRemove.setWidth(26, forSegment: i) }
+        addRemove.target = self
+        addRemove.action = #selector(addRemoveClicked(_:))
+        let logButton = NSButton(image: NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: "Connection Log") ?? NSImage(),
+                                 target: self, action: #selector(openLog(_:)))
+        logButton.bezelStyle = .smallSquare
         logButton.toolTip = "Connection log (⌃⌘L)"
-        let sidebarBar = NSStackView(views: [add, NSView(), logButton])
+        logButton.translatesAutoresizingMaskIntoConstraints = false
+        logButton.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        let sidebarBar = NSStackView(views: [addRemove, NSView(), logButton])
+        logButton.heightAnchor.constraint(equalTo: addRemove.heightAnchor).isActive = true
         sidebarBar.orientation = .horizontal
-        sidebarBar.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 6, right: 8)
+        sidebarBar.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 10, right: 10)
 
         let sidebar = NSVisualEffectView()
         sidebar.material = .sidebar
@@ -300,7 +313,6 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         downloadField.placeholderString = "set by the file browser's downloads"
         downloadField.isEditable = false
         downloadField.textColor = .secondaryLabelColor
-        clearPasswordBox.isHidden = true
         passwordField.placeholderString = ProfileFormValues.passwordPlaceholder(hasStored: false)
         let identityRow = NSStackView(views: [identityField, browseButton()])
         identityRow.orientation = .horizontal
@@ -308,27 +320,38 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         let portRow = NSStackView(views: [portField, NSView()])
         portRow.orientation = .horizontal
 
+        // The everyday fields, then the rest in a separate Advanced box.
         let grid = NSGridView(views: [
             [label("Profile name:"), nameField],
             [label("Host:"), hostField],
             [NSGridCell.emptyContentView, description("anything ssh accepts, ~/.ssh/config aliases included")],
-            [label("SSH port:"), portRow],
-            [label("Identity file:"), identityRow],
             [label(ProfileFormValues.passwordLabel + ":"), passwordField],
+            [NSGridCell.emptyContentView, description("optional — kept in your Keychain")],
             [NSGridCell.emptyContentView, clearPasswordBox],
             [label("Instance:"), instanceField],
             [NSGridCell.emptyContentView, description("blank = default — separate instances have separate sessions")],
+        ])
+        styleFormGrid(grid, labelWidth: Self.labelWidth)
+        for r in [2, 4, 7] { grid.row(at: r).topPadding = -4 }
+        clearPasswordRow = grid.row(at: 5)
+        clearPasswordRow?.isHidden = true
+
+        let advancedGrid = NSGridView(views: [
+            [label("SSH port:"), portRow],
+            [label("Identity file:"), identityRow],
             [label("Extra ssh options:"), extraField],
             [label("Download folder:"), downloadField],
         ])
-        grid.rowSpacing = 6
-        grid.columnSpacing = 8
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 0).width = 150
-        grid.row(at: 2).topPadding = -4
-        grid.row(at: 8).topPadding = -4
+        // The box's margin plus its border, so both grids' fields line up.
+        styleFormGrid(advancedGrid, labelWidth: Self.labelWidth - Self.advancedInset - 1)
+        let advancedBox = NSBox()
+        advancedBox.title = "Advanced"
+        advancedBox.titleFont = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        advancedBox.contentViewMargins = NSSize(width: Self.advancedInset, height: 10)
+        advancedBox.contentView = advancedGrid
 
         errorLabel.textColor = .systemRed
+        errorLabel.isHidden = true
         errorLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -345,10 +368,7 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         reconnectButton.action = #selector(reconnect(_:))
         restartButton.target = self
         restartButton.action = #selector(restartSessions(_:))
-        deleteButton.target = self
-        deleteButton.action = #selector(deleteProfile(_:))
-        deleteButton.hasDestructiveAction = true
-        let buttons = NSStackView(views: [restartButton, deleteButton, NSView(), reconnectButton, showButton, connectButton, saveButton])
+        let buttons = NSStackView(views: [restartButton, NSView(), reconnectButton, showButton, connectButton, saveButton])
         buttons.orientation = .horizontal
         buttons.spacing = 8
 
@@ -394,10 +414,6 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         detailMessage.widthAnchor.constraint(equalTo: detailBox.widthAnchor).isActive = true
         detailExplanation.widthAnchor.constraint(equalTo: detailBox.widthAnchor).isActive = true
 
-        let hintLabel = NSTextField(wrappingLabelWithString: Self.hint)
-        hintLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        hintLabel.textColor = .tertiaryLabelColor
-
         // Banner (configProblem)
         banner.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         banner.textColor = .labelColor
@@ -409,15 +425,20 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         bannerBox.contentView = banner
         bannerBox.isHidden = true
 
-        let right = NSStackView(views: [bannerBox, formTitle, grid, errorLabel, noticeLabel, buttons, detailBox, NSView(), hintLabel])
+        let right = NSStackView(views: [bannerBox, formTitle, grid, advancedBox, errorLabel, noticeLabel, buttons, detailBox])
         right.orientation = .vertical
         right.alignment = .leading
         right.spacing = 10
         right.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 16, right: 20)
-        for v in [bannerBox, grid, errorLabel, buttons, detailBox, hintLabel, noticeLabel] {
+        right.setCustomSpacing(16, after: grid)
+        right.setCustomSpacing(16, after: advancedBox)
+        for v in [bannerBox, grid, advancedBox, errorLabel, buttons, detailBox, noticeLabel] {
             v.widthAnchor.constraint(equalTo: right.widthAnchor, constant: -40).isActive = true
         }
         let rightScroll = NSScrollView()
+        // A flipped clip view keeps a short form at the top (the default
+        // pins the document to the bottom).
+        rightScroll.contentView = FlippedClipView()
         rightScroll.documentView = right
         rightScroll.hasVerticalScroller = true
         rightScroll.autohidesScrollers = true
@@ -440,6 +461,17 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         split.setHoldingPriority(.defaultLow + 1, forSubviewAt: 0)
         DispatchQueue.main.async { split.setPosition(230, ofDividerAt: 0) }
         return split
+    }
+
+    private static let labelWidth: CGFloat = 130
+    private static let advancedInset: CGFloat = 12
+
+    private func styleFormGrid(_ grid: NSGridView, labelWidth: CGFloat) {
+        grid.rowSpacing = 6
+        grid.columnSpacing = 8
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 0).width = labelWidth
+        grid.rowAlignment = .firstBaseline
     }
 
     private func label(_ s: String) -> NSTextField {
@@ -566,8 +598,8 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         passwordField.stringValue = ""
         passwordField.placeholderString = ProfileFormValues.passwordPlaceholder(hasStored: hasPassword)
         clearPasswordBox.state = .off
-        clearPasswordBox.isHidden = !hasPassword
-        errorLabel.stringValue = ""
+        clearPasswordRow?.isHidden = !hasPassword
+        setError(nil)
         formTitle.stringValue = editing == nil ? "New Profile" : v.name
         formTag += 1
     }
@@ -586,6 +618,7 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
 
     private func setError(_ text: String?) {
         errorLabel.stringValue = text ?? ""
+        errorLabel.isHidden = errorLabel.stringValue.isEmpty
     }
 
     private func updateButtons() {
@@ -593,7 +626,7 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         let k = editing.map(kind(of:)) ?? .none
         saveButton.title = isNew ? "Save & Connect" : "Save"
         restartButton.isHidden = isNew
-        deleteButton.isHidden = isNew
+        addRemove.setEnabled(!isNew, forSegment: 1)
         // W-23: Disconnect + Show while up; Cancel while connecting/retrying; else Connect.
         switch k {
         case .connected, .degraded:
@@ -806,6 +839,10 @@ public final class ConnectionsWindowController: NSWindowController, NSWindowDele
         }
     }
 
+    @objc private func addRemoveClicked(_ sender: NSSegmentedControl) {
+        if sender.selectedSegment == 0 { newProfile(sender) } else { deleteProfile(sender) }
+    }
+
     @objc private func openLog(_ sender: Any?) {
         onOpenLog?()
     }
@@ -892,4 +929,10 @@ private final class ProfileCell: NSTableCellView {
         detail.stringValue = profileDetailLine(p) + (live.map { "  (\($0))" } ?? "")
         toolTip = kind == .none ? p.name : "\(p.name) — \(kind.stateText())"
     }
+}
+
+/// A clip view with a top-left origin, so a document shorter than the
+/// scroll view sits at the top.
+private final class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
 }
