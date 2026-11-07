@@ -6,7 +6,7 @@ through an SSH tunnel to its unix socket. The notes below are written from
 the macOS build; the Linux differences (Ctrl+Shift chords in place of ⌘, the
 OS keyring in place of the Keychain, app shortcuts intercepted in main via
 before-input-event because Linux menu accelerators lose to the page) are
-in README.md › Linux and in the comments at main.js `PANE_MENU` /
+in using.md and in the comments at main.js `PANE_MENU` /
 `APP_SHORTCUTS` and app.js `chordModifiers`. The server (`webmux-host serve`;
 `server.js` is its legacy node reference) stays the remote API surface (file
 browser, paste/clipboard shims, future endpoints); ptyhost stays the session
@@ -213,7 +213,7 @@ A self-contained npm package so the server install never pulls Electron.
     window is not a page, and `POST /log/open` (what the settings panel's
     *Open log…* hits) can only pop it, not read it.
   - **Log window** (`logs.html`, a client-owned `BrowserWindow` with the
-    file:-only bridge; ⌘⇧L, the connect page's *Log* button, or the
+    file:-only bridge; ⌃⌘L on macOS / Ctrl+Shift+G on Linux, the connect page's *Log* button, or the
     page settings panel): live tail with follow-on-scroll, host/level/text
     filters, *Copy visible* (⌘⇧C) / *Copy all* in file format, *Reveal
     file*, and *Clear* (ring only — the file is kept). One instance;

@@ -174,11 +174,12 @@ is untouched.
   `electron/ui/index.html:338`).
 - [ ] The header comment of `app.js` describes the wrong chords (A-01;
   `electron/ui/app.js:9-14`).
-- [ ] Docs give the log shortcut as ⌘⇧L; the code uses ⌃⌘L on macOS and
-  Ctrl+Shift+G on Linux (A-02; `README.md:274-276,295`,
-  `docs/electron-client.md:217`).
-- [ ] README says the file browser deletes on `d`/`Delete`; the code also
+- [x] Docs give the log shortcut as ⌘⇧L; the code uses ⌃⌘L on macOS and
+  Ctrl+Shift+G on Linux (A-02). Fixed 2026-11-06 in `docs/using.md` and
+  `docs/electron-client.md`.
+- [x] README says the file browser deletes on `d`/`Delete`; the code also
   deletes on Backspace (A-17; `electron/ui/files-widget.js:1059`).
+  `docs/using.md` now lists Backspace.
 - [ ] README says Ctrl+Shift+V pastes; it works only through Chromium's
   native paste (A-04, inferred).
 - [ ] Ctrl+R / F11 / Ctrl+Q are eaten by a focused terminal on Linux, so
@@ -552,8 +553,9 @@ is untouched.
   2026-11-05: release build into `gtk/ghostty/zig-out-release`, then run.
   The build step is tested; the run step has only been dry-run, since it
   opens the app on the desktop.)
-- [ ] `README.md` and `docs/` do not mention the native client yet beyond
-  `docs/native-client.md`.
+- [x] `README.md` and `docs/` do not mention the native client yet beyond
+  `docs/native-client.md`. Done 2026-11-06: the README lists both clients,
+  `docs/how-it-works.md` and `docs/development.md` cover it.
 - [ ] The Ghostty pin is shared with the host (`host/build.sh`
   `GHOSTTY_COMMIT`, `host/go.mod`); document that all three move together,
   and write down the rebase procedure for the fork (seven upstream edits,

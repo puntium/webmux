@@ -22,7 +22,7 @@ A native Linux client with every feature of the Electron client
   imports from `src/apprt/gtk/` at runtime.
 - There is **no bridge command and no local pty**. A new termio backend,
   `src/termio/Webmux.zig`, speaks the existing webmux WebSocket protocol
-  (`README.md` › Protocol) directly: `snapshot` and `output` frames feed the
+  (`docs/how-it-works.md` › Protocol) directly: `snapshot` and `output` frames feed the
   terminal, keystrokes and query replies go out as `input`, grid changes as
   `resize`.
 - The host (`host/`, `webmux-host`) and its protocols are **unchanged**.
