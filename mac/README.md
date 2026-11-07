@@ -5,7 +5,7 @@ A Swift/AppKit shell on GhosttyKit. The contract is
 this directory. Status: **phases 1–3 done and integrated** (one workspace per
 connection, terminal and file-browser panes, menus and chords, Settings /
 Connections / Log windows, HUD, dev mode on a full workspace, signed bundle with
-the server payload); phase 4 (audit on a real host) is next.
+the server payload); phase 4 closed without the PARITY audit (tweaks come from use); see docs/macos-client.md › Open items.
 
 ## Build
 

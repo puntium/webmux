@@ -1,6 +1,6 @@
 # Native macOS client: `webmux.app` (Swift/AppKit shell on GhosttyKit)
 
-Status (2026-11-07): **phases 1–3 done (seam, GhosttyKit, dev host; Swift foundation; the four feature areas, integrated into one app); phase 4: the fork pass is done, the audit against PARITY on a real host is next.** This is the
+Status (2026-11-07): **phases 1–3 done (seam, GhosttyKit, dev host; Swift foundation; the four feature areas, integrated into one app); phase 4: the fork pass is done; the planned PARITY audit was dropped on 2026-11-07 (good enough to use; tweaks come from use).** Remaining work is the Open items list. This is the
 contract the client is built against, in the spirit of
 [native-client.md](native-client.md) (the Linux client). It is deliberately
 specific; when the code and this document disagree, fix one of them in the
@@ -405,4 +405,4 @@ Integration and release:
 | Integration (one app) | ✅ 2026-11-07: workspace per connection, terminal/files panes, menus + chords, theme/fade/clipboard sync, dev mode on the workspace, `dump` of the workspace, payload in the bundle; `swift test` 343 green (webmuxTests 1); dev smoke and fake-ssh connect flow over the control socket (mac/README.md › Smoke) | `mac/Sources/webmux/App/{AppDelegate,HostWorkspace,FilesPane,MainWindowController}.swift` |
 | First connect to a real Linux host | ✅ 2026-11-07 (user, ad-hoc build) | — |
 | Phase 4: fork pass (config from a string, link rule, OSC 8 at a cell, Alt+click, kitty query) | ✅ 2026-11-07 (fork `src/apprt/embedded/webmux.zig`, `src/config/webmux.zig`; 3 new live tests) | `gtk/ghostty/WEBMUX.md` › macOS: GhosttyKit, `mac/Sources/WebmuxTerminal/Terminal/TerminalPaneView.swift` |
-| Phase 4: PARITY audit on a real host | ⏳ next | `gtk/PARITY.md`, control socket (`mac/README.md` › Smoke) |
+| Phase 4: PARITY audit on a real host | dropped 2026-11-07 (user: good enough; tweaks come from daily use) | — |
