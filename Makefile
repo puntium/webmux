@@ -1,6 +1,6 @@
-# webmux — server, Electron client (macOS, Linux) and native GTK client build entry points
+# webmux — server, Electron client (macOS, Linux), native GTK client and native macOS client build entry points
 
-.PHONY: deps start stop host-libs host payload client-deps client-test client client-run client-linux linux-client linux-client-run linux-client-quick linux-client-try clean
+.PHONY: deps start stop host-libs host payload payload-pack client-deps client-test client client-run client-linux linux-client linux-client-run linux-client-quick linux-client-try mac-ghosttykit mac-client mac-client-run mac-test clean
 
 # ---- server (this machine) ------------------------------------------------
 
@@ -27,6 +27,13 @@ host:            ## build host/dist/webmux-host-<platform> (libghostty-vt too, i
 # that binary is built; run deploy/build-payload.js directly to skip `host`).
 PAYLOAD_ONLY ?=
 payload: host    ## build the per-platform server payloads the client pushes over ssh
+	node deploy/build-payload.js $(if $(PAYLOAD_ONLY),--only $(PAYLOAD_ONLY),)
+
+# Pack only (no nix, no host build): the Linux binaries must already be in
+# host/dist (from `make host`, or a checkout that has them). The Mac client
+# target uses this so a Mac without nix can bundle the payload it ships.
+payload-pack:    ## pack electron/payload from the host/dist binaries already built (no nix)
+	@ls host/dist/webmux-host-linux-* >/dev/null 2>&1 || { echo "payload-pack: no host/dist/webmux-host-linux-* (run 'make host' where nix is available)"; exit 1; }
 	node deploy/build-payload.js $(if $(PAYLOAD_ONLY),--only $(PAYLOAD_ONLY),)
 
 # ---- Electron client (electron/): shared targets + macOS build --------------
@@ -132,6 +139,36 @@ linux-client-quick: linux-client electron/payload/payload.json ## build, then th
 
 linux-client-try: linux-client-quick ## build, quick smokes, then run the native GTK client
 	$(GTK_OUT)/bin/webmux-gtk $(ARGS)
+
+# ---- native macOS client (mac/): webmux.app on GhosttyKit ------------------
+
+# The Swift/AppKit shell links GhosttyKit.xcframework, built from the same
+# fork (gtk/ghostty) with Homebrew zig and Xcode's Metal toolchain, no nix;
+# see docs/macos-client.md. The first build takes several minutes, rebuilds
+# are quick (zig caches). GHOSTTYKIT_OPTIMIZE=Debug for a debug library.
+mac-ghosttykit:  ## build gtk/ghostty → mac/GhosttyKit.xcframework (macOS only)
+	mac/scripts/build-ghosttykit.sh
+
+# The app itself: `swift build -c release` plus the bundle and an ad-hoc
+# signature (mac/scripts/bundle.sh). The xcframework is built first if it is
+# missing (a rebuild after a fork change is `make mac-ghosttykit`). Like the
+# Electron client it ships the server payload (Contents/Resources/payload),
+# packed by `payload-pack` from the host/dist binaries without nix (the
+# Electron `payload` target needs nix for `host`).
+# Ad hoc means a new identity per build; the stable-identity rcodesign path
+# (docs/signing.md) is not wired up for this target yet.
+mac/GhosttyKit.xcframework:
+	mac/scripts/build-ghosttykit.sh
+mac-client: mac/GhosttyKit.xcframework payload-pack ## build mac/dist/webmux.app with the payload (release, ad-hoc signed)
+	mac/scripts/bundle.sh
+
+mac-client-run: mac-client ## build the bundle and open it
+	open mac/dist/webmux.app
+
+# The SwiftPM tests of every mac/ target (the pure libraries and the app).
+# Each area builds in its own scratch path; this one is the app's.
+mac-test:        ## swift test for the native macOS client
+	cd mac && swift test --scratch-path .build-app
 
 clean:           ## remove client build output
 	rm -rf electron/dist electron/payload

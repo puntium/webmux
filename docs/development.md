@@ -18,6 +18,10 @@ it links.
   GTK. Fetch the submodule once: `git submodule update --init gtk/ghostty`.
 - **macOS packaging**: `rcodesign` on PATH, and ideally a signing
   certificate at `~/.config/webmux/codesign.pem` ([signing.md](signing.md)).
+- **Native macOS client (`mac/`)**: Homebrew `zig` 0.17.x, Xcode 26+ with the
+  Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`), `go` (the
+  dev host) and `node` (payload packing); no nix. The submodule as for the GTK
+  client. Details: [macos-client.md](macos-client.md) › Toolchain.
 
 ## Building
 
@@ -28,6 +32,7 @@ make client-deps   # cd electron && npm install
 make client        # harness → payload → electron/dist/webmux-<version>-arm64-mac.zip (signed)
 make client-linux  # harness → payload → electron/dist/webmux-<version>-x86_64-linux.AppImage + -x64-linux.tar.gz
 make linux-client  # gtk/ghostty/zig-out-release/bin/webmux-gtk (GTK_OPTIMIZE=Debug → zig-out/)
+make mac-client    # payload-pack → mac/dist/webmux.app (GhosttyKit + Swift release build, ad-hoc signed, payload inside)
 ```
 
 Without `make`, run the recipes directly: `cd host && nix develop . -c
@@ -63,6 +68,29 @@ First launch asks for Local Network access (allow it) and Keychain access
 to the saved-password store (Always Allow). With a certificate-signed
 build that happens once; an ad-hoc build is a new identity every time, so
 it asks again after each update.
+
+### macOS native client
+
+`mac/` is a Swift/AppKit shell on GhosttyKit (Ghostty's embedding library,
+built from the same fork as the GTK client); the contract and status are in
+[macos-client.md](macos-client.md), the how-to in
+[mac/README.md](../mac/README.md). Prerequisites: zig 0.17, Xcode with the
+Metal toolchain, go, node (above).
+
+```sh
+make mac-ghosttykit     # gtk/ghostty → mac/GhosttyKit.xcframework (about 2 min cold; redo after a fork change)
+make mac-client         # payload-pack (node deploy/build-payload.js from host/dist, no nix) → mac/dist/webmux.app
+make mac-client-run     # ... and open it
+make mac-test           # cd mac && swift test (every target; the live tests start their own dev hosts)
+```
+
+The bundle carries the server payload in `Contents/Resources/payload/`, so
+`host/dist/webmux-host-linux-{x64,arm64}` must exist first (`make host`, with
+nix, or copied in). Dev mode without ssh: `mac/scripts/dev-host.sh build` once
+(a native Darwin `webmux-host`, dev only), then `mac/scripts/dev-host.sh run
+dev` and run the app with `WEBMUX_MAC_DEV_SOCKET=/tmp/wm-mac/dev/http.sock`
+(`WEBMUX_MAC_CONTROL=<socket>` adds the control socket for scripted smokes;
+mac/README.md › Smoke); `mac/scripts/dev-host.sh stop dev` afterwards.
 
 ### Linux Electron client
 
@@ -124,6 +152,7 @@ make client-test                  # Electron: profile store, IPC, tunnel state m
 cd host && nix develop . -c go test ./...          # host unit tests (go only works from host/)
 cd host && node test/e2e.js && node test/migrate.js   # end-to-end harness, node → native migration
 make linux-client-quick           # GTK: release build + the quick smokes (~1 min)
+make mac-test                     # native macOS client: swift test, every target (~1 min; 343 tests)
 ```
 
 The host's test matrix and what each harness covers:

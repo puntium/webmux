@@ -4,3 +4,8 @@ node_modules/
 host/third_party/
 host/dist/
 host/.direnv/
+
+# native macOS client build outputs (mac/)
+mac/GhosttyKit.xcframework
+mac/dist/
+mac/.build*/

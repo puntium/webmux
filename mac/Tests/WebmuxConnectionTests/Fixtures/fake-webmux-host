@@ -1,0 +1,30 @@
+#!/bin/sh
+# Stand-in webmux-host (conn/test.zig's FAKE_HOST): `start` prints chatter
+# then the starter's result object as the last JSON line (exit 1 on failure,
+# like the real starter), keeps an advert, and reports reuse vs (re)start;
+# `ptyhost … shutdown` succeeds once per "running" marker.
+dir=$(cd "$(dirname "$0")" && pwd)
+echo "$0 $* cwd=$(pwd)" >> "$HOME/fake-host.log"
+case "$1" in
+start)
+  echo "starter chatter that is not JSON"
+  echo "[1, 2]"
+  if [ -f "$HOME/fail-start" ]; then
+    printf '%s\n' '{"ok":false,"error":"boom","logTail":"tail one\ntail two"}'
+    exit 1
+  fi
+  h=$(cat "$dir/PAYLOAD_HASH")
+  adv="$HOME/.webmux/$3.json"
+  action=started
+  if [ -f "$adv" ]; then
+    if grep -q "$h" "$adv"; then action=reuse; else echo "replacing $(cat "$adv")" >> "$HOME/fake-host.log"; fi
+  fi
+  mkdir -p "$HOME/.webmux"
+  echo "{\"payloadHash\":\"$h\"}" > "$adv"
+  echo "{\"ok\":true,\"action\":\"$action\",\"advert\":{\"socket\":\"/remote/$3.http.sock\",\"payloadHash\":\"$h\",\"protocol\":1,\"pid\":4242,\"startedAt\":0}}"
+  ;;
+ptyhost)
+  if [ -f "$HOME/ptyhost-running" ]; then rm -f "$HOME/ptyhost-running"; exit 0; fi
+  exit 1 ;;
+*) echo "fake webmux-host: unsupported $1" >&2; exit 2 ;;
+esac

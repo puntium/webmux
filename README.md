@@ -55,6 +55,7 @@ the rendering on your side of the wire.
 | --- | --- | --- |
 | **Electron** — the original client; xterm.js panes, the UI bundled in the app | macOS, Linux | `electron/` · [docs/electron-client.md](docs/electron-client.md) |
 | **webmux-gtk** — a native GTK4 client built as a fork of Ghostty, using Ghostty's terminal core and renderer | Linux | `gtk/` · [gtk/README.md](gtk/README.md) · [docs/native-client.md](docs/native-client.md) |
+| **webmux.app** — a native Swift/AppKit client on GhosttyKit (the same fork's terminal core and Metal renderer), native toolbar, menus, Settings and Connections windows, Keychain | macOS (arm64) | `mac/` · [mac/README.md](mac/README.md) · [docs/macos-client.md](docs/macos-client.md) |
 
 Both push the same server payload and share the same protocol, so they can
 be pointed at the same host and even the same sessions.

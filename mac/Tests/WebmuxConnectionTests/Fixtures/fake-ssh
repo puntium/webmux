@@ -1,0 +1,47 @@
+#!/bin/sh
+# fake ssh for the WebmuxConnection tests (the port of conn/test.zig's
+# FAKE_SSH and webmux-dev/fake-ssh): records argv, runs the "remote" command
+# locally against a scratch remote $HOME, and emulates `-N -L` by creating a
+# marker file at the local socket path. Never touches the network.
+#
+# Knobs (files in $FAKE_REMOTE_HOME, or host names):
+#   host "badhost"         fails like an unresolvable name (exit 255)
+#   ssh-down               "Connection refused" (exit 255)
+#   drop-tunnel            a running tunnel exits 255 ("Broken pipe")
+#   slow                   remote commands sleep 30 s first
+#   $FAKE_PASSWORD         with SSH_ASKPASS set, the helper's answer must match
+printf 'ARGV %s\n' "$*" >> "$FAKE_LOG"
+[ -n "$WEBMUX_SSH_PASSWORD" ] && printf 'PWENV set\n' >> "$FAKE_LOG"
+tunnel=0; fwd=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -N) tunnel=1; shift;;
+    -o|-p|-i) shift 2;;
+    -L) fwd="$2"; shift 2;;
+    -*) shift;;
+    *) break;;
+  esac
+done
+host="$1"; shift
+if [ -n "$SSH_ASKPASS" ]; then
+  pw=$("$SSH_ASKPASS")
+  if [ "$pw" != "$FAKE_PASSWORD" ]; then echo "$host: Permission denied (publickey,password)." >&2; exit 255; fi
+fi
+case "$host" in
+  badhost) echo "ssh: Could not resolve hostname badhost: Name or service not known" >&2; exit 255;;
+  lanbox|*@lanbox) echo "ssh: connect to host lanbox port 22: No route to host" >&2; exit 255;;
+esac
+R="$FAKE_REMOTE_HOME"
+if [ -f "$R/ssh-down" ]; then echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; fi
+if [ $tunnel = 1 ]; then
+  sock="${fwd%%:*}"
+  : > "$sock"
+  echo "$fwd" > "$R/last-forward"
+  while :; do
+    if [ -f "$R/drop-tunnel" ]; then rm -f "$R/drop-tunnel"; echo "client_loop: send disconnect: Broken pipe" >&2; exit 255; fi
+    sleep 0.05
+  done
+fi
+if [ -f "$R/slow" ]; then sleep 30; fi
+export XDG_RUNTIME_DIR="$FAKE_REMOTE_RUN" TMPDIR="$FAKE_REMOTE_RUN"
+cd "$R" && HOME="$R" PATH="$FAKE_STUBS:$PATH" exec sh -c "echo 'motd: welcome'; $1"
