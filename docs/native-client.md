@@ -520,6 +520,25 @@ shell. A local host for tests needs no ssh:
     `[conn]`; success for `page`; warning and error), read back from the
     style, not the Electron palette. Overrides the look in G-20, G-22
     and G-23.
+73. The header pills follow the macOS client's host switcher
+    (`docs/macos-client.md`, 2026-11-07) instead of the Electron pill: the
+    pill itself is coloured by status (green connected, yellow connecting
+    / degraded, red retry / failed, grey unknown; a stronger tint and
+    border for the host in front; connecting still pulses), and shows the
+    host's name in small type above a **minimap** of its workspace's panes
+    (`workspace/minimap.zig`, the port of the Mac's `MinimapLayout`:
+    columns and stacks roughly to proportion, the focused pane in the
+    accent colour for the host in front, an outline of the on-screen part
+    while the strip scrolls). The ✕ sits in the pill's top-right corner,
+    shown on hover. Clicking a pane in a minimap brings its host to the
+    front with that pane focused (`Workspace.focusPane`); the workspace
+    reports every layout, scroll or focus change through
+    `WorkspaceHost.viewportChanged` and the header refreshes the map from
+    a high-priority idle, before the frame. A host whose workspace has not
+    been laid out yet is mapped at a typical window size. The status dot
+    is gone from the header (the Connections page keeps its dots, W-22).
+    Overrides W-11, W-12 (the colours now tint the pill), W-13 and the ✕
+    placement in W-15 in `gtk/PARITY.md`.
 
 (Add to this list; do not silently differ.)
 

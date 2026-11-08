@@ -31,7 +31,10 @@ it on connect (sessions are not affected — see
 Several hosts can be connected at once. The header shows one pill per
 connected host (drag to reorder); switch with ⌘1…⌘9 / Ctrl+1…9, or
 ⌘⇧[ and ⌘⇧] / Ctrl+PageUp and Ctrl+PageDown for previous / next.
-⌘⇧R / Ctrl+Shift+R reconnects the current host.
+⌘⇧R / Ctrl+Shift+R reconnects the current host. In the native clients
+each pill carries a minimap of that host's panes (the focused one
+highlighted, the on-screen part outlined when the strip scrolls); click
+a pane in it to jump straight to that pane.
 
 **Instances.** A profile's instance name (blank = `default`) selects which
 named server/pty-host pair it talks to on the host. Distinct instances are
