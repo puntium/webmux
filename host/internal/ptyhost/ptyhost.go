@@ -22,9 +22,12 @@
 //	{cmd:'kill', session}      → {ok} after killing that session's pty
 //	{cmd:'shutdown'}           → {ok}, then all ptys are killed and the daemon exits
 //	{cmd:'attach', session}    → switches to streaming: snapshot/output/title/exit
-//	                             out, input/resize in; closing the connection detaches
+//	                             out, input/resize in; closing the connection detaches.
+//	                             The session's latest notification, if it has one,
+//	                             follows the snapshot.
 //	{cmd:'watch'}              → switches to streaming session-level events for ALL
-//	                             sessions: {type:'session-title', session, title}
+//	                             sessions: {type:'session-title', session, title} and
+//	                             {type:'notification', session, id, title, body, age}
 package ptyhost
 
 import (

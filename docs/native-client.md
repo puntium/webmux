@@ -539,6 +539,20 @@ shell. A local host for tests needs no ssh:
     is gone from the header (the Connections page keeps its dots, W-22).
     Overrides W-11, W-12 (the colours now tint the pill), W-13 and the ✕
     placement in W-15 in `gtk/PARITY.md`.
+74. Every listing column of the file browser has a bar on top (the
+    Electron columns start at the first row): the folder's name (its
+    whole path as the tooltip) and a ⤒ button that uploads into that
+    folder what the user picks on the local machine in the native file
+    chooser (2026-11-13). GTK's chooser picks files or folders, never
+    both in one dialog, so ⤒ opens a two-entry menu, `Upload files…` and
+    `Upload folders…`; either chooser takes several, is titled
+    `Upload files to <folder>` / `Upload folders to <folder>`, and opens
+    where the last upload of this run was picked from, else in the home
+    folder. What is picked uploads exactly as a drop on that column does
+    (F-54, F-57: folders recursively, the same toasts, the cursor on the
+    last top-level entry); a dismissed chooser does nothing. The preview
+    column has no bar: its header is its top row, and the folder it would
+    upload into is the column beside it. Adds to F-54.
 
 (Add to this list; do not silently differ.)
 

@@ -415,3 +415,62 @@ func TestDaemonCLIAndAddrInUse(t *testing.T) {
 	stale.Shutdown()
 	_ = d
 }
+
+// OSC 9 and OSC 777 become notification frames: to watchers when they
+// fire, and the latest one again, with its age, to whoever attaches next.
+func TestNotifications(t *testing.T) {
+	const name = "tn"
+	startDaemon(t, name)
+	id := control(t, name, map[string]any{"cmd": "create", "cols": 80, "rows": 24})["id"].(string)
+	watch := dial(t, name, map[string]any{"cmd": "watch"})
+	at := dial(t, name, map[string]any{"cmd": "attach", "session": id})
+	if m := at.next(); m["type"] != "snapshot" {
+		t.Fatalf("first frame %v", m)
+	}
+
+	at.send(map[string]any{"type": "input", "data": `printf '\033]9;built\033\\'; printf '\033]777;notify;Tests;all green\007'; echo NOT""ED` + "\r"})
+	// The attached connection carries no notification frame of its own:
+	// clients get it from the watch fan-out, once per socket.
+	at.until("NOTED", func(m map[string]any, out string) bool {
+		if m["type"] == "notification" {
+			t.Fatalf("notification on the attach stream: %v", m)
+		}
+		return strings.Contains(out, "NOTED\r\n")
+	})
+
+	first, second := watch.next(), watch.next()
+	if first["type"] != "notification" || first["session"] != id || first["title"] != "" || first["body"] != "built" {
+		t.Fatalf("OSC 9 frame: %v", first)
+	}
+	if second["type"] != "notification" || second["session"] != id || second["title"] != "Tests" || second["body"] != "all green" {
+		t.Fatalf("OSC 777 frame: %v", second)
+	}
+	if first["id"] == "" || first["id"] == second["id"] {
+		t.Fatalf("ids: %v %v", first["id"], second["id"])
+	}
+
+	// A later attach gets the latest one after the snapshot, same id, aged.
+	time.Sleep(50 * time.Millisecond)
+	at2 := dial(t, name, map[string]any{"cmd": "attach", "session": id})
+	if m := at2.next(); m["type"] != "snapshot" {
+		t.Fatalf("first frame %v", m)
+	}
+	replay := at2.next()
+	if replay["type"] != "notification" || replay["id"] != second["id"] || replay["body"] != "all green" {
+		t.Fatalf("replay: %v", replay)
+	}
+	if age, _ := replay["age"].(float64); age < 50 || age > 10000 {
+		t.Fatalf("replay age: %v", replay["age"])
+	}
+
+	// A session that never notified replays nothing.
+	id2 := control(t, name, map[string]any{"cmd": "create", "cols": 80, "rows": 24})["id"].(string)
+	at3 := dial(t, name, map[string]any{"cmd": "attach", "session": id2})
+	at3.send(map[string]any{"type": "input", "data": `echo QUI""ET` + "\r"})
+	at3.until("QUIET", func(m map[string]any, out string) bool {
+		if m["type"] == "notification" {
+			t.Fatalf("unexpected notification: %v", m)
+		}
+		return strings.Contains(out, "QUIET\r\n")
+	})
+}

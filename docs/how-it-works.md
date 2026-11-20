@@ -116,6 +116,7 @@ same frames over its unix socket and the server forwards them verbatim.
 | server → client | `error` | session doesn't exist (the pane is dropped) |
 | server → client | `paste-result` | how a pasted image was delivered (`claude` or `path`) |
 | server → client | `open-url` | a program in the session asked for a browser (see shims) |
+| server → client | `notification` | a program in any session asked for a desktop notification (see below) |
 | client → server | `input` | keystrokes |
 | client → server | `resize` | cols/rows |
 | client → server | `paste-image` | base64 image for the clipboard slot |
@@ -172,6 +173,37 @@ Electron page writes it with `navigator.clipboard.writeText`, the GTK
 client through Ghostty's clipboard handling. Reads via OSC 52 are
 ignored. What tmux does with OSC 52 from programs inside it, and the
 one-line config it needs, is in [using.md](using.md) › Clipboard.
+
+## Desktop notifications (OSC 9, OSC 777)
+
+A program asks for a desktop notification with OSC 9 (body only) or OSC
+777 (`notify;title;body`). The sequence still travels to the client in the
+PTY output, but clients do not act on it there. The pty host catches it on
+its mirror and sends a frame of its own:
+
+```
+{"type":"notification","session":<id>,"id":<uuid>,"title":…,"body":…,"age":<ms>}
+```
+
+- **When it fires**, the frame goes out through the same fan-out as
+  `session-title`: on every open socket of every client, so it arrives for
+  sessions that have no pane too. `age` is 0.
+- **On attach**, the session's latest notification follows the snapshot,
+  with `age` saying how long ago it fired by the host's clock. This is
+  what covers a notification that fired while the client was away (asleep,
+  or the tunnel reconnecting).
+
+A client shows a frame once per `id`, and only if `age` is at most 30
+seconds; the id is what keeps the copies on several sockets, and the
+replay to a client that saw it live, from showing twice. Only the latest
+one per session is kept, and only in the pty host's memory.
+
+The GTK client implements this (the notification goes to
+`org.freedesktop.Notifications`; without a title, the pane's title is
+used). A click on the notification raises the window, brings the
+session's host to the front and focuses its pane, which scrolls it into
+view. The Electron and macOS clients ignore the frame for now. OSC 99
+(kitty's protocol) is not handled.
 
 ## Image paste
 

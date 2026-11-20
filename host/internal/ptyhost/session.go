@@ -42,6 +42,8 @@ type Session struct {
 	clients  map[*client]struct{}
 	utf8     utf8Stream
 	titleHit bool
+	notes    []libghostty.TerminalDesktopNotification // raised by the write in progress
+	lastNote *notification
 
 	// Read by describe() from other goroutines; written by the owner.
 	mu       sync.Mutex
@@ -49,6 +51,26 @@ type Session struct {
 	rows     int
 	title    string
 	nclients int
+}
+
+// notification is a desktop notification a program asked for (OSC 9 or
+// OSC 777). The id lets a client show each one once: the live frame reaches
+// it on every open socket, and again on a later attach.
+type notification struct {
+	id, title, body string
+	at              time.Time
+}
+
+func (n *notification) frame(session string) orderedObj {
+	return orderedObj{
+		{"type", "notification"},
+		{"session", session},
+		{"id", n.id},
+		{"title", n.title},
+		{"body", n.body},
+		// Measured here, so a client's clock doesn't matter.
+		{"age", time.Since(n.at).Milliseconds()},
+	}
 }
 
 // buildEnv reproduces ptyhost.js's session environment exactly.
@@ -138,6 +160,12 @@ func newSession(d *Daemon, cols, rows int) (*Session, error) {
 		// VTWrite on the owner goroutine: only note it; the owner reads
 		// Title() and broadcasts after VTWrite returns.
 		libghostty.WithTitleChanged(func(*libghostty.Terminal) { s.titleHit = true }),
+		// Desktop notifications go out as their own frame rather than being
+		// left to each client's parser, so they also reach sessions nobody
+		// is attached to. Same rule as the title: note it, act after VTWrite.
+		libghostty.WithDesktopNotification(func(_ *libghostty.Terminal, n libghostty.TerminalDesktopNotification) {
+			s.notes = append(s.notes, n)
+		}),
 	)
 	if err != nil {
 		return nil, err
@@ -272,6 +300,19 @@ func (s *Session) output(b []byte) {
 			s.setTitle(title)
 		}
 	}
+	for _, n := range s.notes {
+		s.notify(n.Title, n.Body)
+	}
+	s.notes = s.notes[:0]
+}
+
+// notify sends a notification to every watcher, which is how it reaches
+// clients whether or not one is attached to this session, and keeps it as
+// the session's latest for the next attach.
+func (s *Session) notify(title, body string) {
+	n := &notification{id: uuid.NewString(), title: title, body: body, at: time.Now()}
+	s.lastNote = n
+	s.d.broadcastWatchers(n.frame(s.id))
 }
 
 func (s *Session) setTitle(title string) {
@@ -309,6 +350,11 @@ func (s *Session) attach(c *client) {
 		{"title", title},
 		{"pid", s.pid},
 	})
+	// The latest notification, with its age: a client that was away when
+	// it fired decides from the age whether it is still worth showing.
+	if s.lastNote != nil {
+		c.send(s.lastNote.frame(s.id))
+	}
 	s.clients[c] = struct{}{}
 }
 
