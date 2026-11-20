@@ -84,5 +84,6 @@ be pointed at the same host and even the same sessions.
 | [docs/electron-client.md](docs/electron-client.md) | The Electron client: tunnel supervision, liveness, client-owned pages |
 | [docs/native-client.md](docs/native-client.md) | The GTK client: the contract it was built against, rulings, status |
 | [docs/push-deploy.md](docs/push-deploy.md) | Connect-is-deploy: payloads, remote layout, versioning |
+| [docs/nix.md](docs/nix.md) | The flake: packages, the NixOS module, adding webmux-gtk to a system configuration |
 | [docs/signing.md](docs/signing.md) | Signing the macOS app and why it is required |
 | [docs/restart-resilience.md](docs/restart-resilience.md) | Why the pty host exists (design history) |

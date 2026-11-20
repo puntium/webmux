@@ -43,8 +43,12 @@ The **payload** is what a client pushes to a host on connect: one
 `webmux-host` binary plus the shims, per platform, named by a content hash
 ([push-deploy.md](push-deploy.md)). Both clients read it from
 `electron/payload/` — the GTK client finds it by walking up from its
-binary, so it has to run from a checkout. A client without a payload
-reports "no server payload bundled" on connect.
+binary, so a binary built here has to run from a checkout. A client without
+a payload reports "no server payload bundled" on connect.
+
+To install the GTK client on a NixOS machine instead of running it from a
+checkout, the flake at the repo root packages it together with the payload:
+[nix.md](nix.md).
 
 ### macOS client
 
